@@ -2,11 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Audio Recording -->
-    <key>com.apple.security.device.audio-input</key>
+    <!-- Enable App Sandbox -->
+    <key>com.apple.security.app-sandbox</key>
     <true/>
 
-    <!-- User Selected Files (for opening audio files and saving transcriptions) -->
+    <!-- User Selected Files (for opening audio files and saving transcriptions via dialog) -->
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
 
@@ -14,21 +14,7 @@
     <key>com.apple.security.network.client</key>
     <true/>
 
-    <!-- Hardware -->
-    <key>com.apple.security.device.microphone</key>
-    <true/>
-
-    <!-- Hardened Runtime -->
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <false/>
-
-    <key>com.apple.security.cs.allow-jit</key>
-    <false/>
-
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <false/>
-
-    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
-    <false/>
+    <!-- REMOVED: Microphone/Audio Input - NOT needed for file transcription -->
+    <!-- We only process existing audio files, not live recording -->
 </dict>
 </plist>

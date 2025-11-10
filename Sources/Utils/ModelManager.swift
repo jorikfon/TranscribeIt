@@ -28,9 +28,9 @@ public class ModelManager: ObservableObject {
     ]
 
     private init() {
-        // Получаем директорию для хранения моделей
-        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        modelDirectory = cacheDir.appendingPathComponent("whisperkit_models", isDirectory: true)
+        // Используем тот же путь что и WhisperService для постоянного хранения моделей
+        modelDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/TranscribeIt/Models")
 
         // Создаём директорию если не существует
         try? FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
@@ -89,21 +89,20 @@ public class ModelManager: ObservableObject {
         return downloadedModels.contains(modelName)
     }
 
-    /// Проверка доступности модели через WhisperKit
+    /// Проверка доступности модели через проверку файлов на диске
+    /// ОПТИМИЗАЦИЯ: Не создаём WhisperKit экземпляр, проверяем только файлы
     public func checkModelAvailability(_ modelName: String) async -> Bool {
-        // Пытаемся быстро инициализировать WhisperKit с этой моделью
-        // Если модель уже загружена, это будет быстро
-        do {
-            let _ = try await WhisperKit(
-                model: modelName,
-                verbose: false,
-                logLevel: .none,
-                prewarm: false // Не прогреваем модель
-            )
+        // WhisperKit сохраняет модели с вложенной структурой: models/argmaxinc/whisperkit-coreml/
+        let modelPath = modelDirectory.appendingPathComponent("models/argmaxinc/whisperkit-coreml/openai_whisper-\(modelName)", isDirectory: true)
+
+        if FileManager.default.fileExists(atPath: modelPath.path) {
+            LogManager.app.debug("ModelManager: Модель \(modelName) найдена: \(modelPath.path)")
             return true
-        } catch {
-            return false
         }
+
+        // Если модель не найдена по файлам, она будет загружена при первом использовании
+        LogManager.app.debug("ModelManager: Модель \(modelName) не найдена (будет загружена)")
+        return false
     }
 
     /// Загрузка модели
@@ -115,41 +114,54 @@ public class ModelManager: ObservableObject {
             downloadError = nil
         }
 
-        print("ModelManager: Начало загрузки модели \(modelName)...")
+        LogManager.app.info("ModelManager: Начало загрузки модели \(modelName)...")
 
         do {
             // Имитируем прогресс (WhisperKit не предоставляет реальный прогресс)
             let progressTask = Task {
-                for i in 1...5 {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 секунда
+                for i in 1...10 {
+                    try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 секунды
                     await MainActor.run {
-                        self.downloadProgress = Double(i) * 0.15 // 0.15, 0.30, 0.45, 0.60, 0.75
+                        self.downloadProgress = Double(i) * 0.08 // 0.08, 0.16, 0.24...0.80
                     }
                 }
             }
 
             // WhisperKit автоматически загружает модель при инициализации
             // Мы просто создаём временный экземпляр для загрузки
-            print("ModelManager: Инициализация WhisperKit для загрузки \(modelName)...")
+            LogManager.app.info("ModelManager: Инициализация WhisperKit для загрузки \(modelName)...")
+
             let _ = try await WhisperKit(
                 model: modelName,
+                downloadBase: modelDirectory,  // Используем постоянный путь
+                modelRepo: "argmaxinc/whisperkit-coreml",
                 verbose: true,
-                logLevel: .info
+                logLevel: .info,
+                prewarm: false  // Не прогреваем - только загружаем
             )
 
             // Отменяем task прогресса
             progressTask.cancel()
 
             await MainActor.run {
-                isDownloading = false
-                downloadingModel = nil
-                downloadProgress = 1.0
+                self.downloadProgress = 1.0
             }
 
-            // Обновляем список загруженных моделей
-            scanDownloadedModels()
+            LogManager.app.success("ModelManager: Модель \(modelName) успешно загружена")
 
-            print("ModelManager: ✓ Модель \(modelName) успешно загружена")
+            // Добавляем модель в список загруженных сразу
+            await MainActor.run {
+                if !self.downloadedModels.contains(modelName) {
+                    self.downloadedModels.append(modelName)
+                }
+                self.isDownloading = false
+                self.downloadingModel = nil
+            }
+
+            // Небольшая пауза для визуализации прогресса
+            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            LogManager.app.info("ModelManager: Модель \(modelName) доступна для использования")
         } catch {
             await MainActor.run {
                 isDownloading = false
@@ -158,7 +170,7 @@ public class ModelManager: ObservableObject {
                 downloadError = "Failed to download \(modelName): \(error.localizedDescription)"
             }
 
-            print("ModelManager: ✗ Ошибка загрузки модели: \(error)")
+            LogManager.app.error("ModelManager: Ошибка загрузки модели \(modelName): \(error)")
             throw ModelError.downloadFailed(error)
         }
     }

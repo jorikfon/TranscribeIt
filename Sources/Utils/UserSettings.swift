@@ -363,7 +363,7 @@ Metal, GPU, CPU, memory, cache, buffer, thread, async, sync, framework, library.
 
     // MARK: - File Transcription Settings
 
-    /// Тип VAD алгоритма для настроек
+    /// Тип VAD алгоритма для настроек (включая режим Batch)
     public enum VADAlgorithmType: String, Codable, CaseIterable, Identifiable {
         case spectralTelephone = "spectral_telephone"
         case spectralWideband = "spectral_wideband"
@@ -372,6 +372,7 @@ Metal, GPU, CPU, memory, cache, buffer, thread, async, sync, framework, library.
         case adaptiveAggressive = "adaptive_aggressive"
         case standardLowQuality = "standard_low_quality"
         case standardHighQuality = "standard_high_quality"
+        case batch = "batch"  // Режим с фиксированными чанками
 
         public var id: String { rawValue }
 
@@ -391,6 +392,8 @@ Metal, GPU, CPU, memory, cache, buffer, thread, async, sync, framework, library.
                 return "Standard VAD - Low Quality"
             case .standardHighQuality:
                 return "Standard VAD - High Quality"
+            case .batch:
+                return "Batch Mode - Fixed Chunks"
             }
         }
 
@@ -410,7 +413,14 @@ Metal, GPU, CPU, memory, cache, buffer, thread, async, sync, framework, library.
                 return "Энергетический метод для телефонного аудио. Простой и быстрый."
             case .standardHighQuality:
                 return "Энергетический метод для чистого аудио. Более точное разбиение."
+            case .batch:
+                return "Разбиение на фиксированные чанки с перекрытием. Альтернатива VAD для сложных случаев."
             }
+        }
+
+        /// Является ли это режимом VAD или Batch
+        public var isBatchMode: Bool {
+            return self == .batch
         }
     }
 
@@ -461,28 +471,32 @@ Metal, GPU, CPU, memory, cache, buffer, thread, async, sync, framework, library.
         let mode: String
         let algorithm: String
 
-        switch fileTranscriptionMode {
-        case .vad:
-            mode = "vad"
-        case .batch:
+        // Определяем режим на основе vadAlgorithmType
+        if vadAlgorithmType.isBatchMode {
             mode = "batch"
-        }
+            algorithm = "batch"  // Для batch режима алгоритм не используется
+        } else {
+            mode = "vad"
 
-        switch vadAlgorithmType {
-        case .spectralTelephone:
-            algorithm = "spectral_telephone"
-        case .spectralWideband:
-            algorithm = "spectral_wideband"
-        case .spectralDefault:
-            algorithm = "spectral_default"
-        case .adaptiveLowQuality:
-            algorithm = "adaptive_low_quality"
-        case .adaptiveAggressive:
-            algorithm = "adaptive_aggressive"
-        case .standardLowQuality:
-            algorithm = "standard_low_quality"
-        case .standardHighQuality:
-            algorithm = "standard_high_quality"
+            // Определяем конкретный VAD алгоритм
+            switch vadAlgorithmType {
+            case .spectralTelephone:
+                algorithm = "spectral_telephone"
+            case .spectralWideband:
+                algorithm = "spectral_wideband"
+            case .spectralDefault:
+                algorithm = "spectral_default"
+            case .adaptiveLowQuality:
+                algorithm = "adaptive_low_quality"
+            case .adaptiveAggressive:
+                algorithm = "adaptive_aggressive"
+            case .standardLowQuality:
+                algorithm = "standard_low_quality"
+            case .standardHighQuality:
+                algorithm = "standard_high_quality"
+            case .batch:
+                algorithm = "batch"  // На случай если всё же попадём сюда
+            }
         }
 
         return (mode, algorithm)

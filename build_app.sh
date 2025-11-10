@@ -59,6 +59,23 @@ else
     echo -e "${YELLOW}⚠️  No app icon found (Resources/AppIcon.icns), using default${NC}"
 fi
 
+# Copy dependency resources (WhisperKit needs swift-transformers_Hub.bundle)
+echo -e "${YELLOW}[3.5/6] Copying dependency resources...${NC}"
+
+# Поиск swift-transformers_Hub.bundle в .build
+BUNDLE_PATH=$(find .build -name "swift-transformers_Hub.bundle" -type d 2>/dev/null | head -1)
+
+if [ -n "$BUNDLE_PATH" ]; then
+    # Создаём bundle директорию в корне app и копируем только JSON файлы
+    # Это обходит проблему codesign "unsealed contents"
+    mkdir -p "${APP_DIR}/swift-transformers_Hub.bundle"
+    cp -R "${BUNDLE_PATH}/"*.json "${APP_DIR}/swift-transformers_Hub.bundle/"
+    echo -e "${GREEN}   ✅ Copied swift-transformers_Hub.bundle to app root${NC}"
+else
+    echo -e "${YELLOW}   ⚠️  swift-transformers_Hub.bundle not found${NC}"
+fi
+
+
 # Create PkgInfo file
 echo -e "${YELLOW}[4/6] Creating PkgInfo...${NC}"
 echo -n "APPL????" > "${CONTENTS_DIR}/PkgInfo"
@@ -77,29 +94,33 @@ fi
 # Sign the app with ad-hoc signature
 echo -e "${YELLOW}[6/7] Signing app bundle...${NC}"
 
-# Sign with entitlements if available
+# ПРИМЕЧАНИЕ: Из-за swift-transformers_Hub.bundle в корне app,
+# codesign будет ругаться на "unsealed contents".
+# Для локального тестирования это не критично.
+
+# Пытаемся подписать, игнорируя ошибки
 ENTITLEMENTS_FILE="Entitlements.plist"
 if [ -f "${ENTITLEMENTS_FILE}" ]; then
-    codesign --force --deep --sign - --entitlements "${ENTITLEMENTS_FILE}" "${APP_DIR}" 2>/dev/null
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✅ App signed with ad-hoc signature + entitlements${NC}"
-        echo -e "${GREEN}   Entitlements: ${ENTITLEMENTS_FILE}${NC}"
-    else
-        # Fallback without entitlements
-        codesign --force --deep --sign - "${APP_DIR}" 2>/dev/null
-        echo -e "${GREEN}✅ App signed with ad-hoc signature (no entitlements)${NC}"
-    fi
-else
-    codesign --force --deep --sign - "${APP_DIR}" 2>/dev/null
-    echo -e "${GREEN}✅ App signed with ad-hoc signature (no entitlements found)${NC}"
+    codesign --force --sign - --entitlements "${ENTITLEMENTS_FILE}" "${APP_DIR}" 2>/dev/null || true
 fi
 
-# Verify signature
-SIGN_INFO=$(codesign -dvv "${APP_DIR}" 2>&1 | grep "Identifier=" | cut -d= -f2)
-echo -e "${GREEN}   Identifier: ${SIGN_INFO}${NC}"
+# Проверяем результат
+if codesign -v "${APP_DIR}" 2>/dev/null; then
+    echo -e "${GREEN}✅ App signed with ad-hoc signature${NC}"
+    SIGN_INFO=$(codesign -dvv "${APP_DIR}" 2>&1 | grep "Identifier=" | cut -d= -f2)
+    echo -e "${GREEN}   Identifier: ${SIGN_INFO}${NC}"
+else
+    echo -e "${YELLOW}⚠️  App not signed (unsealed contents in bundle root)${NC}"
+    echo -e "${YELLOW}   This is OK for local testing${NC}"
+fi
+
+# Remove quarantine attributes
+echo -e "${YELLOW}[7/8] Removing quarantine attributes...${NC}"
+xattr -cr "${APP_DIR}" 2>/dev/null || true
+echo -e "${GREEN}✅ Quarantine attributes removed${NC}"
 
 # Verify app bundle structure
-echo -e "${YELLOW}[7/7] Verifying .app bundle structure...${NC}"
+echo -e "${YELLOW}[8/8] Verifying .app bundle structure...${NC}"
 
 if [ -d "${APP_DIR}" ]; then
     echo -e "${GREEN}✅ .app bundle created successfully${NC}"

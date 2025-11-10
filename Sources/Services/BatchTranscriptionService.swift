@@ -398,4 +398,138 @@ public class BatchTranscriptionService {
 
         return resampled
     }
+
+    // MARK: - CLI Batch Processing
+
+    /// Пакетная транскрибация нескольких файлов (для CLI режима)
+    /// - Parameters:
+    ///   - files: Массив URL файлов для транскрибации
+    ///   - vadEnabled: Использовать ли VAD (разделение по спикерам)
+    /// - Returns: Массив результатов транскрибации
+    public func transcribeMultipleFiles(files: [URL], vadEnabled: Bool) async -> [TranscriptionResult] {
+        var results: [TranscriptionResult] = []
+
+        LogManager.batch.info("Начало пакетной транскрибации: \(files.count) файлов")
+        fputs("[\u{1B}[34mINFO\u{1B}[0m] Starting batch transcription: \(files.count) file(s)\n", stderr)
+
+        for (index, fileURL) in files.enumerated() {
+            LogManager.batch.info("[\(index + 1)/\(files.count)] Обработка: \(fileURL.lastPathComponent)")
+            fputs("[\u{1B}[33m\(index + 1)/\(files.count)\u{1B}[0m] Processing: \(fileURL.lastPathComponent)\n", stderr)
+            fflush(stderr)
+
+            let startTime = Date()
+
+            do {
+                // Получаем размер файла
+                let fileAttributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+                let fileSize = fileAttributes[.size] as? Int64 ?? 0
+
+                let result: TranscriptionResult
+
+                if vadEnabled {
+                    // VAD режим не реализован пока, используем batch
+                    let dialogue = try await transcribe(url: fileURL)
+
+                    let dialogueTurns = dialogue.turns.map { turn in
+                        TranscriptionResult.DialogueTurn(
+                            speaker: turn.speaker == .left ? "Speaker 1" : "Speaker 2",
+                            timestamp: formatTimestampForJSON(turn.startTime),
+                            text: turn.text
+                        )
+                    }
+
+                    let duration = Date().timeIntervalSince(startTime)
+
+                    result = TranscriptionResult(
+                        file: fileURL.lastPathComponent,
+                        status: "success",
+                        transcription: TranscriptionResult.TranscriptionData(
+                            mode: "vad",
+                            dialogue: dialogueTurns,
+                            text: nil
+                        ),
+                        error: nil,
+                        metadata: TranscriptionResult.TranscriptionMetadata(
+                            model: ModelManager.shared.currentModel,
+                            vadEnabled: true,
+                            duration: duration,
+                            audioFileSize: fileSize
+                        )
+                    )
+
+                    LogManager.batch.success("[\(index + 1)/\(files.count)] Успешно (VAD): \(fileURL.lastPathComponent) - \(dialogue.turns.count) фраз")
+                    fputs("[\u{1B}[32m✓\u{1B}[0m] Completed in \(String(format: "%.1f", duration))s - \(dialogue.turns.count) dialogue turns\n", stderr)
+                    fflush(stderr)
+                } else {
+                    // Batch режим - простой текст
+                    let dialogue = try await transcribe(url: fileURL)
+                    let text = dialogue.turns.map { $0.text }.joined(separator: " ")
+
+                    let duration = Date().timeIntervalSince(startTime)
+
+                    result = TranscriptionResult(
+                        file: fileURL.lastPathComponent,
+                        status: "success",
+                        transcription: TranscriptionResult.TranscriptionData(
+                            mode: "batch",
+                            dialogue: nil,
+                            text: text
+                        ),
+                        error: nil,
+                        metadata: TranscriptionResult.TranscriptionMetadata(
+                            model: ModelManager.shared.currentModel,
+                            vadEnabled: false,
+                            duration: duration,
+                            audioFileSize: fileSize
+                        )
+                    )
+
+                    LogManager.batch.success("[\(index + 1)/\(files.count)] Успешно (Batch): \(fileURL.lastPathComponent)")
+                    fputs("[\u{1B}[32m✓\u{1B}[0m] Completed in \(String(format: "%.1f", duration))s\n", stderr)
+                    fflush(stderr)
+                }
+
+                results.append(result)
+
+            } catch {
+                LogManager.batch.error("[\(index + 1)/\(files.count)] Ошибка: \(fileURL.lastPathComponent) - \(error)")
+
+                let duration = Date().timeIntervalSince(startTime)
+
+                let result = TranscriptionResult(
+                    file: fileURL.lastPathComponent,
+                    status: "error",
+                    transcription: nil,
+                    error: error.localizedDescription,
+                    metadata: TranscriptionResult.TranscriptionMetadata(
+                        model: ModelManager.shared.currentModel,
+                        vadEnabled: vadEnabled,
+                        duration: duration,
+                        audioFileSize: 0
+                    )
+                )
+
+                fputs("[\u{1B}[31m✗\u{1B}[0m] Error: \(error.localizedDescription)\n", stderr)
+                fflush(stderr)
+
+                results.append(result)
+            }
+        }
+
+        LogManager.batch.success("Пакетная транскрибация завершена: \(results.count) файлов")
+
+        let successCount = results.filter { $0.status == "success" }.count
+        let errorCount = results.filter { $0.status == "error" }.count
+        fputs("\n[\u{1B}[34mINFO\u{1B}[0m] Batch complete: \(successCount) succeeded, \(errorCount) failed\n", stderr)
+        fflush(stderr)
+
+        return results
+    }
+
+    /// Форматирование timestamp в читаемый формат для JSON (MM:SS)
+    private func formatTimestampForJSON(_ seconds: Double) -> String {
+        let minutes = Int(seconds) / 60
+        let secs = Int(seconds) % 60
+        return String(format: "%02d:%02d", minutes, secs)
+    }
 }

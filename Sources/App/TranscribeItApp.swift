@@ -1,14 +1,15 @@
-import SwiftUI
+import Cocoa
 
 /// Главная точка входа приложения TranscribeIt
+/// Используем чистый AppKit без SwiftUI App (окна управляются через AppDelegate)
 @main
-struct TranscribeItApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+class TranscribeItMain {
+    // Сохраняем strong reference на AppDelegate (иначе он сразу освободится)
+    static let appDelegate = AppDelegate()
 
-    var body: some Scene {
-        // Menu bar приложение с возможностью показа окна
-        Settings {
-            EmptyView()
-        }
+    static func main() {
+        let app = NSApplication.shared
+        app.delegate = appDelegate
+        app.run()
     }
 }

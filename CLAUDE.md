@@ -4,7 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**TranscribeIt** is a professional audio/video transcription application optimized for Apple Silicon (M1/M2/M3). It provides batch file processing with advanced features like dual-channel speaker separation, audio editing with waveform visualization, and multi-format export (SRT, VTT, TXT, DOCX, JSON).
+**TranscribeIt** is a professional desktop application for transcribing **stereo telephone call recordings** on Apple Silicon (M1/M2/M3).
+
+### Key Features
+- **Dual-channel speaker separation**: Left and right audio channels are processed separately to distinguish between two speakers
+- **On-device transcription**: Uses WhisperKit with Metal GPU acceleration for privacy and speed
+- **Timeline visualization**: Synchronized view showing both speakers with clickable segments for audio playback
+- **Multi-format export**: SRT, VTT, TXT, DOCX, JSON formats with speaker labels
+- **Audio playback controls**: Variable speed, mono/stereo switching, volume boost for low-quality recordings
+
+### Primary Use Case
+Processing stereo telephone recordings where:
+- **Left channel** = Speaker 1 (caller)
+- **Right channel** = Speaker 2 (recipient)
 
 The application is built with **Swift** and uses **WhisperKit** for on-device speech recognition with Metal GPU acceleration.
 
@@ -22,13 +34,14 @@ The application is built with **Swift** and uses **WhisperKit** for on-device sp
   - `processSegments()` - Segment-by-segment transcription with timestamps
 
 #### 2. BatchTranscriptionService (`Sources/Services/BatchTranscriptionService.swift`)
-- Multi-file queue management
+- Multi-file queue management (currently not used in main UI - single file mode)
 - Parallel processing with configurable concurrency
 - Batch progress tracking
 - **Key Methods**:
   - `addToQueue()` - Adds files to transcription queue
   - `processBatch()` - Manages concurrent transcription jobs
   - `pauseProcessing()` / `resumeProcessing()` - Queue control
+- **Note**: Current application workflow processes one file at a time
 
 #### 3. WhisperService (`Sources/Services/WhisperService.swift`)
 - WhisperKit integration for on-device transcription

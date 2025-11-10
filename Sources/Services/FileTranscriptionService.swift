@@ -212,6 +212,9 @@ public class FileTranscriptionService {
             vadAlgorithm = .standard(VADParameters.lowQuality)
         case .standardHighQuality:
             vadAlgorithm = .standard(VADParameters.highQuality)
+        case .batch:
+            // Для batch режима VAD алгоритм не используется, но устанавливаем дефолтный
+            vadAlgorithm = .default
         }
 
         LogManager.app.info("FileTranscriptionService: применены настройки - режим: \(self.mode == .vad ? "VAD" : "Batch"), алгоритм: \(self.vadAlgorithmName)")

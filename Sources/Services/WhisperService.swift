@@ -61,6 +61,16 @@ public class WhisperService {
     public func loadModel() async throws {
         LogManager.transcription.begin("Загрузка модели", details: modelSize)
 
+        // Используем постоянный путь для кэша моделей
+        // Это позволяет переиспользовать модели между запусками
+        let modelsPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/TranscribeIt/Models")
+
+        // Создаём директорию если её нет
+        try? FileManager.default.createDirectory(at: modelsPath, withIntermediateDirectories: true)
+
+        LogManager.transcription.info("Путь к моделям: \(modelsPath.path)")
+
         // Настройка вычислительных юнитов для максимальной производительности на M1 MAX
         // Используем Neural Engine для всех компонентов где возможно
         let computeOptions = ModelComputeOptions(
@@ -71,10 +81,12 @@ public class WhisperService {
         )
 
         do {
-            // Инициализация WhisperKit с указанной моделью
-            // Модель будет загружена автоматически с Hugging Face
+            // Инициализация WhisperKit с указанной моделью и путём к кэшу
+            // Модель будет загружена автоматически с Hugging Face если её нет локально
             whisperKit = try await WhisperKit(
                 model: modelSize,
+                downloadBase: modelsPath,  // Используем постоянный путь
+                modelRepo: "argmaxinc/whisperkit-coreml",
                 computeOptions: computeOptions,
                 verbose: true,
                 logLevel: .debug,

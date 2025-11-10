@@ -29,16 +29,17 @@ extension Color {
 }
 
 /// Окно для отображения прогресса и результатов транскрипции файлов
-/// FIX: Используем NSPanel вместо NSWindow для предотвращения краша при закрытии
-public class MainWindow: NSPanel, NSWindowDelegate {
+/// Главное окно приложения для работы с одним стерео файлом телефонных записей
+public class MainWindow: NSWindow, NSWindowDelegate {
     private var hostingController: NSHostingController<FileTranscriptionView>?
     public var viewModel: FileTranscriptionViewModel
     public var onClose: ((MainWindow) -> Void)?
+    public var onStartTranscription: (([URL]) -> Void)?
 
     public convenience init() {
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
-        let windowWidth: CGFloat = 700
-        let windowHeight: CGFloat = 500
+        let windowWidth: CGFloat = 900
+        let windowHeight: CGFloat = 700
 
         let windowFrame = NSRect(
             x: screenFrame.midX - windowWidth / 2,
@@ -47,10 +48,10 @@ public class MainWindow: NSPanel, NSWindowDelegate {
             height: windowHeight
         )
 
-        // NSPanel инициализация (вместо NSWindow)
+        // NSWindow инициализация
         self.init(
             contentRect: windowFrame,
-            styleMask: [.titled, .closable, .resizable],
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
@@ -63,27 +64,31 @@ public class MainWindow: NSPanel, NSWindowDelegate {
         super.init(contentRect: contentRect, styleMask: style, backing: backingStoreType, defer: flag)
 
         // Настройка окна
-        self.title = "File Transcription"
-        self.isFloatingPanel = false
-        self.becomesKeyOnlyIfNeeded = false
+        self.title = "TranscribeIt - Stereo Call Transcription"
+        self.minSize = NSSize(width: 700, height: 500)
         self.delegate = self  // Устанавливаем delegate для обработки событий закрытия
 
-        // Создаём SwiftUI view с ViewModel
-        let swiftUIView = FileTranscriptionView(viewModel: viewModel)
+        // Создаём SwiftUI view с ViewModel и callback
+        let swiftUIView = FileTranscriptionView(
+            viewModel: viewModel,
+            onStartTranscription: { [weak self] files in
+                self?.onStartTranscription?(files)
+            }
+        )
         let hosting = NSHostingController(rootView: swiftUIView)
         self.hostingController = hosting
 
         // Настраиваем content view
         self.contentView = hosting.view
 
-        LogManager.app.info("MainWindow: NSPanel создан с SwiftUI")
+        LogManager.app.info("MainWindow: NSWindow создано с SwiftUI")
     }
 
     // MARK: - NSWindowDelegate
 
     /// Вызывается при закрытии окна - останавливаем воспроизведение
     public func windowWillClose(_ notification: Notification) {
-        viewModel.globalAudioPlayer.stop()
+        viewModel.audioPlayer.stop()
         LogManager.app.info("MainWindow: Окно закрывается, воспроизведение остановлено")
     }
 
@@ -91,10 +96,14 @@ public class MainWindow: NSPanel, NSWindowDelegate {
     public func startTranscription(files: [URL]) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            guard let file = files.first else { return }
 
-            self.viewModel.startTranscription(files: files)
+            self.viewModel.startTranscription(file: file)
             self.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+
+            // Вызываем callback для запуска реальной транскрипции
+            self.onStartTranscription?(files)
         }
     }
 
@@ -113,47 +122,46 @@ public class MainWindow: NSPanel, NSWindowDelegate {
 }
 
 /// ViewModel для окна транскрипции файлов
+/// Упрощённая версия для работы с одним стерео файлом телефонных записей
 public class FileTranscriptionViewModel: ObservableObject {
     @Published public var state: TranscriptionState = .idle
     @Published public var currentFile: String = ""
     @Published public var progress: Double = 0.0
     @Published public var modelName: String = ""  // Текущая модель Whisper
     @Published public var vadInfo: String = ""  // Информация о VAD алгоритме
+    @Published public var modelLoadingStatus: String? = nil  // Статус загрузки модели в фоне
 
-    // ВАЖНО: Используем willSet вместо @Published для массива, чтобы избежать проблем с памятью
-    var transcriptions: [FileTranscription] = [] {
-        willSet {
-            objectWillChange.send()
-        }
-    }
+    // Текущая транскрипция (только один файл)
+    @Published public var currentTranscription: FileTranscription?
 
-    // Глобальный аудио плеер для всех транскрипций
-    let globalAudioPlayer = AudioPlayerManager()
+    // URL текущего файла для перезапуска
+    @Published public var currentFileURL: URL?
 
-    private var fileQueue: [URL] = []
-    private var currentIndex = 0
+    // Глобальный аудио плеер для воспроизведения
+    public let audioPlayer = AudioPlayerManager()
 
     public init() {
-        // Простая инициализация без @Published массивов
-        self.transcriptions = []
-        self.fileQueue = []
         self.state = .idle
         self.currentFile = ""
         self.progress = 0.0
-        self.currentIndex = 0
         self.modelName = ""
+        self.vadInfo = ""
+        self.modelLoadingStatus = "Loading model in background..."
+        self.currentTranscription = nil
+        self.currentFileURL = nil
     }
 
     public func setModel(_ modelName: String) {
         self.modelName = modelName
     }
 
-    public func startTranscription(files: [URL]) {
-        self.fileQueue = files
-        self.currentIndex = 0
-        self.transcriptions = []
+    /// Начать транскрипцию файла (только один файл)
+    public func startTranscription(file: URL) {
+        reset()
+        self.currentFile = file.lastPathComponent
+        self.currentFileURL = file  // Сохраняем URL для перезапуска
         self.state = .processing
-        // Транскрипция будет запущена извне через AppDelegate
+        self.progress = 0.0
     }
 
     public func updateProgress(file: String, progress: Double) {
@@ -161,54 +169,55 @@ public class FileTranscriptionViewModel: ObservableObject {
         self.progress = progress
     }
 
-    public func addTranscription(file: String, text: String, fileURL: URL? = nil) {
-        let transcription = FileTranscription(fileName: file, text: text, status: .success, dialogue: nil, fileURL: fileURL)
-        transcriptions.append(transcription)
+    /// Установить результат транскрипции (моно режим)
+    public func setTranscription(file: String, text: String, fileURL: URL) {
+        self.currentTranscription = FileTranscription(
+            fileName: file,
+            text: text,
+            status: .success,
+            dialogue: nil,
+            fileURL: fileURL
+        )
+        self.currentFileURL = fileURL  // Обновляем URL
     }
 
-    public func addDialogue(file: String, dialogue: DialogueTranscription, fileURL: URL? = nil) {
-        let transcription = FileTranscription(
+    /// Установить результат диалога (стерео режим)
+    public func setDialogue(file: String, dialogue: DialogueTranscription, fileURL: URL) {
+        self.currentTranscription = FileTranscription(
             fileName: file,
             text: dialogue.formatted(),
             status: .success,
             dialogue: dialogue,
             fileURL: fileURL
         )
-        transcriptions.append(transcription)
+        self.currentFileURL = fileURL  // Обновляем URL
+        LogManager.app.debug("setDialogue: \(file), turns: \(dialogue.turns.count), isStereo: \(dialogue.isStereo)")
     }
 
-    /// Обновляет существующий диалог или создаёт новый (для постепенного добавления реплик)
-    public func updateDialogue(file: String, dialogue: DialogueTranscription, fileURL: URL? = nil) {
-        LogManager.app.debug("updateDialogue: \(file), turns: \(dialogue.turns.count), isStereo: \(dialogue.isStereo)")
-
-        // Ищем существующую транскрипцию для этого файла
-        if let index = transcriptions.firstIndex(where: { $0.fileName == file }) {
-            // Обновляем существующую
-            let updated = FileTranscription(
-                fileName: file,
-                text: dialogue.formatted(),
-                status: .success,
-                dialogue: dialogue,
-                fileURL: fileURL
-            )
-            transcriptions[index] = updated
-            LogManager.app.debug("Обновлена существующая транскрипция #\(index)")
-        } else {
-            // Создаём новую
-            addDialogue(file: file, dialogue: dialogue, fileURL: fileURL)
-            LogManager.app.debug("Создана новая транскрипция")
-        }
-    }
-
-    public func addError(file: String, error: String) {
-        let transcription = FileTranscription(fileName: file, text: error, status: .error, dialogue: nil, fileURL: nil)
-        transcriptions.append(transcription)
+    /// Установить ошибку транскрипции
+    public func setError(file: String, error: String) {
+        self.currentTranscription = FileTranscription(
+            fileName: file,
+            text: error,
+            status: .error,
+            dialogue: nil,
+            fileURL: nil
+        )
     }
 
     public func complete() {
         self.state = .completed
-        self.currentFile = ""
         self.progress = 1.0
+    }
+
+    /// Сброс состояния для начала работы с новым файлом
+    public func reset() {
+        audioPlayer.stop()
+        self.state = .idle
+        self.currentFile = ""
+        self.progress = 0.0
+        self.currentTranscription = nil
+        // Не сбрасываем currentFileURL - оставляем для перезапуска
     }
 
     public enum TranscriptionState {
@@ -219,27 +228,44 @@ public class FileTranscriptionViewModel: ObservableObject {
 }
 
 /// Модель транскрипции файла
-struct FileTranscription: Identifiable {
-    let id = UUID()
-    let fileName: String
-    let text: String
-    let status: Status
-    let dialogue: DialogueTranscription?  // Опциональный диалог для стерео
-    let fileURL: URL?  // URL оригинального файла для воспроизведения
+public struct FileTranscription: Identifiable {
+    public let id = UUID()
+    public let fileName: String
+    public let text: String
+    public let status: Status
+    public let dialogue: DialogueTranscription?  // Опциональный диалог для стерео
+    public let fileURL: URL?  // URL оригинального файла для воспроизведения
 
-    enum Status {
+    public enum Status {
         case success
         case error
+    }
+
+    public init(fileName: String, text: String, status: Status, dialogue: DialogueTranscription?, fileURL: URL?) {
+        self.fileName = fileName
+        self.text = text
+        self.status = status
+        self.dialogue = dialogue
+        self.fileURL = fileURL
     }
 }
 
 /// SwiftUI view для окна транскрипции
 struct FileTranscriptionView: View {
     @ObservedObject var viewModel: FileTranscriptionViewModel
+    var onStartTranscription: (([URL]) -> Void)?
 
-    // Показываем только первую (текущую) транскрипцию
+    @ObservedObject private var modelManager = ModelManager.shared
+    @ObservedObject private var userSettings = UserSettings.shared
+
+    @State private var showSettings: Bool = false
+    @State private var selectedModel: String = ""
+    @State private var selectedVADAlgorithm: UserSettings.VADAlgorithmType = .spectralTelephone
+    @State private var selectedLanguage: String = "ru"
+
+    // Текущая транскрипция из ViewModel
     private var currentTranscription: FileTranscription? {
-        viewModel.transcriptions.first
+        viewModel.currentTranscription
     }
 
     var body: some View {
@@ -252,7 +278,7 @@ struct FileTranscriptionView: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.primary)
                 } else {
-                    Text("File Transcription")
+                    Text("Stereo Call Transcription")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.secondary)
                 }
@@ -261,12 +287,46 @@ struct FileTranscriptionView: View {
 
                 // Модель и VAD
                 HStack(spacing: 12) {
+                    // Статус загрузки модели (показываем только если загружается, не когда готова)
+                    if let loadingStatus = viewModel.modelLoadingStatus, loadingStatus != "Model ready" {
+                        HStack(spacing: 4) {
+                            ProgressView()
+                                .scaleEffect(0.5)
+                                .frame(width: 10, height: 10)
+                            Text(loadingStatus)
+                                .font(.system(size: 10))
+                                .foregroundColor(.orange)
+                        }
+                    }
+
+                    // Показываем модель и VAD всегда когда они доступны (в том числе когда модель готова)
                     if !viewModel.modelName.isEmpty {
                         HStack(spacing: 4) {
                             Image(systemName: "cpu")
                                 .font(.system(size: 10))
                                 .foregroundColor(.blue)
                             Text(viewModel.modelName)
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    // Язык транскрибации
+                    if !userSettings.transcriptionLanguage.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "globe")
+                                .font(.system(size: 10))
+                                .foregroundColor(.purple)
+                            Text(userSettings.transcriptionLanguage.uppercased())
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                        }
+                    } else {
+                        HStack(spacing: 4) {
+                            Image(systemName: "globe")
+                                .font(.system(size: 10))
+                                .foregroundColor(.purple)
+                            Text("Auto")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
                         }
@@ -282,6 +342,37 @@ struct FileTranscriptionView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+
+                    // Кнопка "New File" (если есть транскрипция)
+                    if viewModel.state == .completed {
+                        Button(action: {
+                            selectNewFile()
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.counterclockwise")
+                                    .font(.system(size: 10))
+                                Text("New File")
+                                    .font(.system(size: 10))
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.mini)
+                    }
+
+                    // Кнопка настроек (показывается только если есть файл)
+                    if viewModel.currentFileURL != nil {
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showSettings.toggle()
+                            }
+                        }) {
+                            Image(systemName: showSettings ? "chevron.up.circle.fill" : "gearshape.circle.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(showSettings ? .blue : .secondary)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .help("Настройки транскрибации")
+                    }
                 }
             }
             .padding(.horizontal, 16)
@@ -290,10 +381,26 @@ struct FileTranscriptionView: View {
 
             Divider()
 
+            // Панель настроек (раскрывающаяся)
+            if showSettings {
+                TranscriptionSettingsPanel(
+                    selectedModel: $selectedModel,
+                    selectedVADAlgorithm: $selectedVADAlgorithm,
+                    selectedLanguage: $selectedLanguage,
+                    modelManager: modelManager,
+                    onRetranscribe: {
+                        retranscribeCurrentFile()
+                    }
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
+                Divider()
+            }
+
             // Прогресс бар (если транскрибируется)
             if viewModel.state == .processing {
                 ProgressView(value: viewModel.progress, total: 1.0)
                     .progressViewStyle(LinearProgressViewStyle())
+                    .padding(.horizontal, 16)
             }
 
             // Содержимое транскрипции
@@ -301,7 +408,7 @@ struct FileTranscriptionView: View {
                 VStack(spacing: 0) {
                     // Аудио плеер
                     if let fileURL = transcription.fileURL {
-                        AudioPlayerView(audioPlayer: viewModel.globalAudioPlayer, fileURL: fileURL)
+                        AudioPlayerView(audioPlayer: viewModel.audioPlayer, fileURL: fileURL)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 12)
                             .background(Color(NSColor.controlBackgroundColor))
@@ -309,7 +416,7 @@ struct FileTranscriptionView: View {
 
                     // Диалог или текст
                     if let dialogue = transcription.dialogue, dialogue.isStereo {
-                        TimelineSyncedDialogueView(dialogue: dialogue, audioPlayer: viewModel.globalAudioPlayer)
+                        TimelineSyncedDialogueView(dialogue: dialogue, audioPlayer: viewModel.audioPlayer)
                     } else {
                         ScrollView {
                             Text(transcription.text)
@@ -325,218 +432,251 @@ struct FileTranscriptionView: View {
                     // Загружаем аудио файл при появлении
                     if let fileURL = transcription.fileURL {
                         do {
-                            try viewModel.globalAudioPlayer.loadAudio(from: fileURL)
+                            try viewModel.audioPlayer.loadAudio(from: fileURL)
                         } catch {
                             LogManager.app.failure("Ошибка загрузки аудио", error: error)
                         }
                     }
                 }
             } else {
-                // Пустое состояние
-                Spacer()
-                Text("No transcription yet")
-                    .font(.system(size: 14))
-                    .foregroundColor(.secondary)
-                Spacer()
-            }
-        }
-    }
+                // Пустое состояние - показываем кнопку выбора файла
+                VStack(spacing: 20) {
+                    Spacer()
 
-}
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 48))
+                        .foregroundColor(.secondary.opacity(0.5))
 
-/// Карточка с результатом транскрипции файла
-struct TranscriptionResultCard: View {
-    let transcription: FileTranscription
-    @ObservedObject var audioPlayer: AudioPlayerManager
+                    Text("No audio file selected")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.secondary)
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Имя файла
-            HStack {
-                Image(systemName: transcription.status == .success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .foregroundColor(transcription.status == .success ? .green : .red)
-                Text(transcription.fileName)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.primary)
-                Spacer()
+                    Text("Select an audio file to transcribe")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary.opacity(0.7))
 
-                // Кнопка копирования
-                if transcription.status == .success {
                     Button(action: {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(transcription.text, forType: .string)
-                        LogManager.app.success("Текст скопирован")
+                        selectAudioFile()
                     }) {
-                        Image(systemName: "doc.on.doc")
-                            .foregroundColor(.secondary)
+                        Label("Select Audio File", systemImage: "folder")
+                            .font(.system(size: 13))
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
                     }
-                    .buttonStyle(PlainButtonStyle())
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+
+                    Text("Supported formats: WAV, MP3, M4A, AIFF, FLAC, AAC")
+                        .font(.caption)
+                        .foregroundColor(.secondary.opacity(0.6))
+
+                    Spacer()
                 }
-            }
-
-            // Аудио плеер (если есть URL файла)
-            if let fileURL = transcription.fileURL {
-                AudioPlayerView(audioPlayer: audioPlayer, fileURL: fileURL)
-                    .padding(.vertical, 8)
-            }
-
-            // Текст транскрипции или диалог
-            if let dialogue = transcription.dialogue, dialogue.isStereo {
-                // Показываем диалог для стерео в виде двух синхронизированных колонок
-                TimelineSyncedDialogueView(dialogue: dialogue, audioPlayer: audioPlayer)
-            } else {
-                // Обычный текст для моно
-                Text(transcription.text)
-                    .font(.system(size: 13))
-                    .foregroundColor(transcription.status == .success ? .primary : .red)
-                    .lineLimit(5)
-                    .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .padding(12)
-        .background(Color.gray.opacity(0.2))
-        .cornerRadius(10)
         .onAppear {
-            // Загружаем аудио файл при появлении
-            if let fileURL = transcription.fileURL {
-                do {
-                    try audioPlayer.loadAudio(from: fileURL)
-                } catch {
-                    LogManager.app.failure("Ошибка загрузки аудио", error: error)
+            initializeSettings()
+        }
+    }
+
+    // MARK: - File Selection
+
+    private func selectAudioFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Select Stereo Audio File"
+        panel.prompt = "Select"
+        panel.message = "Select a stereo telephone recording (left = speaker 1, right = speaker 2)"
+        panel.allowsMultipleSelection = false  // Только один файл
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.audio, .mp3, .wav, .aiff, .mpeg4Audio]
+
+        panel.begin { response in
+            if response == .OK, let fileURL = panel.url {
+                // Проверяем расширение файла
+                let ext = fileURL.pathExtension.lowercased()
+                guard ["wav", "mp3", "m4a", "aiff", "flac", "aac"].contains(ext) else {
+                    LogManager.app.error("Неподдерживаемый формат файла: \(ext)")
+                    return
                 }
+
+                // Вызываем callback с одним файлом
+                onStartTranscription?([fileURL])
+                LogManager.app.info("Выбран файл для транскрипции: \(fileURL.lastPathComponent)")
             }
         }
     }
+
+    /// Выбор нового файла после завершения предыдущей транскрипции
+    private func selectNewFile() {
+        viewModel.reset()
+        viewModel.currentFileURL = nil  // Сбрасываем URL для нового файла
+        selectAudioFile()
+    }
+
+    /// Перезапустить транскрибацию текущего файла с новыми настройками
+    private func retranscribeCurrentFile() {
+        guard let fileURL = viewModel.currentFileURL else {
+            LogManager.app.error("Невозможно перезапустить - нет URL файла")
+            return
+        }
+
+        // Сохраняем выбранные настройки
+        modelManager.saveCurrentModel(selectedModel)
+        userSettings.vadAlgorithmType = selectedVADAlgorithm
+        userSettings.transcriptionLanguage = selectedLanguage
+
+        // Автоматически обновляем fileTranscriptionMode на основе выбранного алгоритма
+        if selectedVADAlgorithm.isBatchMode {
+            userSettings.fileTranscriptionMode = .batch
+        } else {
+            userSettings.fileTranscriptionMode = .vad
+        }
+
+        let modeInfo = selectedVADAlgorithm.isBatchMode ? "Batch" : "VAD"
+        let langInfo = selectedLanguage.isEmpty ? "Auto" : selectedLanguage.uppercased()
+        LogManager.app.info("Перезапуск транскрибации: модель=\(selectedModel), режим=\(modeInfo), алгоритм=\(selectedVADAlgorithm.displayName), язык=\(langInfo)")
+
+        // Скрываем панель настроек
+        withAnimation {
+            showSettings = false
+        }
+
+        // Запускаем транскрибацию заново
+        onStartTranscription?([fileURL])
+    }
 }
 
-/// Чат-подобное отображение диалога с timeline
-struct DialogueChatView: View {
-    let dialogue: DialogueTranscription
-    @ObservedObject var audioPlayer: AudioPlayerManager
+// Инициализация значений при появлении view
+extension FileTranscriptionView {
+    func initializeSettings() {
+        // Инициализируем только один раз
+        if selectedModel.isEmpty {
+            selectedModel = modelManager.currentModel
+        }
+        selectedVADAlgorithm = userSettings.vadAlgorithmType
+        selectedLanguage = userSettings.transcriptionLanguage
+    }
+}
+
+/// Панель настроек транскрибации
+struct TranscriptionSettingsPanel: View {
+    @Binding var selectedModel: String
+    @Binding var selectedVADAlgorithm: UserSettings.VADAlgorithmType
+    @Binding var selectedLanguage: String
+    @ObservedObject var modelManager: ModelManager
+    var onRetranscribe: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Заголовок с информацией
-            HStack {
-                Image(systemName: "headphones")
-                    .foregroundColor(.blue)
-                Text("Stereo Dialogue")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
+            Text("Transcription Settings")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.primary)
 
-                Spacer()
+            HStack(spacing: 16) {
+                // Выбор модели
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Whisper Model")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
 
-                // Общая длительность
-                Text(formatDuration(dialogue.totalDuration))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
+                    Picker("", selection: $selectedModel) {
+                        ForEach(modelManager.supportedModels, id: \.name) { model in
+                            HStack {
+                                Text(model.displayName)
+                                Text("(\(model.size), \(model.accuracy))")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                            }
+                            .tag(model.name)
+                        }
+                    }
+                    .pickerStyle(MenuPickerStyle())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                // Выбор языка
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Language")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+
+                    Picker("", selection: $selectedLanguage) {
+                        Text("Auto-detect").tag("")
+                        Text("Russian").tag("ru")
+                        Text("English").tag("en")
+                    }
+                    .pickerStyle(MenuPickerStyle())
+                    .frame(width: 150)
+                }
             }
 
-            Divider()
-
-            // Timeline с репликами (отсортированные по времени)
-            // УБРАН ScrollView и maxHeight - используем естественный layout
-            if dialogue.sortedByTime.isEmpty {
-                Text("Нет распознанных реплик")
-                    .font(.system(size: 12))
+            // Выбор VAD алгоритма / режима
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Segmentation Method")
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.secondary)
-                    .padding()
-            } else {
-                VStack(alignment: .leading, spacing: 16) {
-                    ForEach(dialogue.sortedByTime) { turn in
-                        ChatMessageBubble(turn: turn, audioPlayer: audioPlayer)
+
+                Picker("", selection: $selectedVADAlgorithm) {
+                    // Группа VAD алгоритмов
+                    Section(header: Text("VAD Algorithms")) {
+                        ForEach(UserSettings.VADAlgorithmType.allCases.filter { !$0.isBatchMode }) { vadType in
+                            Text(vadType.displayName)
+                                .font(.system(size: 11))
+                                .tag(vadType)
+                        }
+                    }
+
+                    // Batch режим отдельно
+                    Section(header: Text("Alternative Mode")) {
+                        ForEach(UserSettings.VADAlgorithmType.allCases.filter { $0.isBatchMode }) { vadType in
+                            Text(vadType.displayName)
+                                .font(.system(size: 11))
+                                .tag(vadType)
+                        }
                     }
                 }
-                .padding(.top, 8)
+                .pickerStyle(MenuPickerStyle())
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                // Описание выбранного метода
+                HStack(spacing: 4) {
+                    Image(systemName: selectedVADAlgorithm.isBatchMode ? "square.grid.3x3.fill" : "waveform")
+                        .font(.system(size: 9))
+                        .foregroundColor(selectedVADAlgorithm.isBatchMode ? .orange : .green)
+
+                    Text(selectedVADAlgorithm.description)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary.opacity(0.8))
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // Кнопка перезапуска
+            HStack {
+                Spacer()
+                Button(action: {
+                    onRetranscribe()
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 11))
+                        Text("Retranscribe with New Settings")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
             }
         }
-    }
-
-    private func formatDuration(_ seconds: TimeInterval) -> String {
-        let minutes = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", minutes, secs)
+        .padding(16)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
     }
 }
 
-/// Пузырь сообщения в стиле мессенджера
-struct ChatMessageBubble: View {
-    let turn: DialogueTranscription.Turn
-    @ObservedObject var audioPlayer: AudioPlayerManager
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            // Левое выравнивание для Speaker 1
-            if turn.speaker == .left {
-                messageContent
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Spacer(minLength: 60)  // Отступ справа
-            } else {
-                // Правое выравнивание для Speaker 2
-                Spacer(minLength: 60)  // Отступ слева
-                messageContent
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-        }
-    }
-
-    private var messageContent: some View {
-        VStack(alignment: turn.speaker == .left ? .leading : .trailing, spacing: 4) {
-            // Заголовок с именем диктора и временем
-            HStack(spacing: 6) {
-                if turn.speaker == .left {
-                    speakerLabel
-                    timeLabel
-                } else {
-                    timeLabel
-                    speakerLabel
-                }
-            }
-
-            // Текст сообщения (кликабельный для перехода к времени)
-            Text(turn.text)
-                .font(.system(size: 13))
-                .foregroundColor(.primary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(bubbleColor)
-                .cornerRadius(16)
-                .multilineTextAlignment(turn.speaker == .left ? .leading : .trailing)
-                .onTapGesture {
-                    // Переход к времени реплики и начало воспроизведения
-                    audioPlayer.seekAndPlay(to: turn.startTime)
-                    LogManager.app.info("Переход к реплике: \(turn.startTime)s")
-                }
-                .help("Click to play from this time")
-        }
-    }
-
-    private var speakerLabel: some View {
-        Text(turn.speaker.displayName)
-            .font(.system(size: 10, weight: .bold))
-            .foregroundColor(turn.speaker == .left ? Color.speaker1Accent : Color.speaker2Accent)
-    }
-
-    private var timeLabel: some View {
-        Text(formatTimestamp(turn.startTime))
-            .font(.system(size: 9, weight: .regular))
-            .foregroundColor(.secondary)
-    }
-
-    private var bubbleColor: Color {
-        if turn.speaker == .left {
-            return Color.speaker1Background
-        } else {
-            return Color.speaker2Background
-        }
-    }
-
-    private func formatTimestamp(_ seconds: TimeInterval) -> String {
-        let minutes = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", minutes, secs)
-    }
-}
 
 /// Маппер для визуального сжатия периодов тишины на timeline
 struct CompressedTimelineMapper {
@@ -977,6 +1117,9 @@ struct CompactTurnCard: View {
     @ObservedObject var audioPlayer: AudioPlayerManager
     let durationBarScale: CGFloat
 
+    @State private var isHovered: Bool = false
+    @State private var showCopiedFeedback: Bool = false
+
     // Проверка активности
     private var isPlaying: Bool {
         audioPlayer.isPlaying &&
@@ -1006,21 +1149,45 @@ struct CompactTurnCard: View {
             .frame(height: durationBarHeight + 12)  // Фиксированная высота для VStack
 
             // Контент реплики
-            VStack(alignment: .leading, spacing: 4) {
-                // Заголовок: длительность
-                Text(formatDuration(turn.duration))
-                    .font(.system(size: 8))
-                    .foregroundColor(.secondary)
+            ZStack(alignment: .topTrailing) {
+                VStack(alignment: .leading, spacing: 4) {
+                    // Заголовок: длительность
+                    Text(formatDuration(turn.duration))
+                        .font(.system(size: 8))
+                        .foregroundColor(.secondary)
 
-                // Текст реплики - полное развертывание без ограничений
-                Text(turn.text)
-                    .font(.system(size: 11))
-                    .foregroundColor(.primary)
-                    .lineLimit(nil)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Текст реплики - полное развертывание без ограничений
+                    Text(turn.text)
+                        .font(.system(size: 11))
+                        .foregroundColor(.primary)
+                        .lineLimit(nil)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity)
+
+                // Кнопка копирования (появляется при наведении)
+                if isHovered {
+                    Button(action: {
+                        copyToClipboard()
+                    }) {
+                        ZStack {
+                            // Фон кнопки
+                            Circle()
+                                .fill(Color(NSColor.controlBackgroundColor).opacity(0.9))
+                                .frame(width: 20, height: 20)
+
+                            // Иконка
+                            Image(systemName: showCopiedFeedback ? "checkmark" : "doc.on.doc")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(showCopiedFeedback ? .green : .secondary)
+                        }
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .padding(6)
+                    .transition(.opacity)
+                }
             }
-            .padding(8)
-            .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 6)
                     .fill(speaker == .left ? Color.speaker1Background : Color.speaker2Background)
@@ -1032,6 +1199,11 @@ struct CompactTurnCard: View {
                             )
                     )
             )
+            .onHover { hovering in
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    isHovered = hovering
+                }
+            }
         }
         .padding(.vertical, 2)
         .onTapGesture {
@@ -1040,66 +1212,24 @@ struct CompactTurnCard: View {
         }
     }
 
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", mins, secs)
-    }
+    private func copyToClipboard() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(turn.text, forType: .string)
 
-    private func formatDuration(_ seconds: TimeInterval) -> String {
-        return String(format: "%.1fs", seconds)
-    }
-}
-
-/// Карточка реплики для timeline view
-struct TimelineTurnCard: View {
-    let turn: DialogueTranscription.Turn
-    let speaker: DialogueTranscription.Turn.Speaker
-    @ObservedObject var audioPlayer: AudioPlayerManager
-
-    private var isPlaying: Bool {
-        audioPlayer.isPlaying &&
-        audioPlayer.currentTime >= turn.startTime &&
-        audioPlayer.currentTime <= turn.endTime
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            // Время (с DEBUG информацией)
-            HStack {
-                Text("\(formatTime(turn.startTime)) - \(formatTime(turn.endTime))")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundColor(.secondary)
-
-                Spacer()
-
-                Text(formatDuration(turn.duration))
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary.opacity(0.7))
-            }
-
-            // Текст
-            Text(turn.text)
-                .font(.system(size: 12))
-                .foregroundColor(.primary)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(speaker == .left ? Color.blue.opacity(0.1) : Color.orange.opacity(0.1))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(
-                                    isPlaying ? (speaker == .left ? Color.blue : Color.orange) : Color.clear,
-                                    lineWidth: 2
-                                )
-                        )
-                )
-                .onTapGesture {
-                    audioPlayer.seekAndPlay(to: turn.startTime)
-                }
+        // Показываем обратную связь
+        withAnimation {
+            showCopiedFeedback = true
         }
-        .padding(.vertical, 4)
+
+        // Скрываем галочку через 1.5 секунды
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation {
+                showCopiedFeedback = false
+            }
+        }
+
+        LogManager.app.info("Скопирован текст реплики: \(turn.text.prefix(50))...")
     }
 
     private func formatTime(_ seconds: TimeInterval) -> String {
@@ -1113,212 +1243,6 @@ struct TimelineTurnCard: View {
     }
 }
 
-/// Компактное отображение диалога - реплики последовательно без привязки к абсолютному времени
-
-/// Временная шкала (ось времени) - с визуальным сжатием тишины
-struct TimelineAxis: View {
-    let totalDuration: TimeInterval  // визуальная длительность (сжатая)
-    let pixelsPerSecond: CGFloat
-    let timelineMapper: CompressedTimelineMapper
-    let realDuration: TimeInterval  // реальная длительность
-
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .topLeading) {
-                // Вертикальная линия
-                Rectangle()
-                    .fill(Color.gray.opacity(0.3))
-                    .frame(width: 2)
-                    .offset(x: 48)
-
-                // Индикаторы сжатых участков (более заметные)
-                ForEach(Array(timelineMapper.silenceGaps.enumerated()), id: \.offset) { index, gap in
-                    let visualStart = timelineMapper.visualPosition(for: gap.realStartTime)
-                    let visualEnd = timelineMapper.visualPosition(for: gap.realEndTime)
-                    let visualMid = (visualStart + visualEnd) / 2
-                    let savedSeconds = gap.duration - timelineMapper.compressedGapDisplay
-
-                    // Фон для индикатора (полупрозрачный прямоугольник)
-                    Rectangle()
-                        .fill(Color.orange.opacity(0.15))
-                        .frame(width: 50, height: CGFloat(visualEnd - visualStart) * pixelsPerSecond)
-                        .offset(y: CGFloat(visualStart) * pixelsPerSecond)
-
-                    // Пунктирная линия для сжатого участка (более толстая)
-                    Path { path in
-                        let startY = CGFloat(visualStart) * pixelsPerSecond
-                        let endY = CGFloat(visualEnd) * pixelsPerSecond
-                        path.move(to: CGPoint(x: 48, y: startY))
-                        path.addLine(to: CGPoint(x: 48, y: endY))
-                    }
-                    .stroke(style: StrokeStyle(lineWidth: 3, dash: [4, 4]))
-                    .foregroundColor(.orange.opacity(0.8))
-
-                    // Индикатор сжатия с информацией
-                    ZStack {
-                        // Фон для текста
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.orange.opacity(0.9))
-                            .frame(width: 46, height: 28)
-
-                        VStack(spacing: 0) {
-                            // Иконка сжатия
-                            Text("⇅")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(.white)
-                            // Сохраненное время
-                            Text("-\(Int(savedSeconds))s")
-                                .font(.system(size: 8, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.9))
-                        }
-                    }
-                    .offset(x: 25, y: CGFloat(visualMid) * pixelsPerSecond - 14)
-                }
-
-                // Временные метки (используем реальное время для меток)
-                ForEach(timeMarks, id: \.self) { realTime in
-                    let visualTime = timelineMapper.visualPosition(for: realTime)
-
-                    HStack(spacing: 4) {
-                        Text(formatTime(realTime))  // Показываем реальное время
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(.secondary)
-                            .frame(width: 40, alignment: .trailing)
-
-                        // Короткая горизонтальная черта
-                        Rectangle()
-                            .fill(Color.gray.opacity(0.5))
-                            .frame(width: 6, height: 1)
-                    }
-                    .offset(y: CGFloat(visualTime) * pixelsPerSecond - 6)
-                }
-            }
-            .frame(height: CGFloat(totalDuration) * pixelsPerSecond)
-        }
-        .frame(height: CGFloat(totalDuration) * pixelsPerSecond)
-    }
-
-    private var timeMarks: [TimeInterval] {
-        // Адаптивный интервал: для коротких файлов 5 секунд, для длинных 10
-        let interval: TimeInterval = realDuration < 60 ? 5 : 10
-        var marks: [TimeInterval] = [0]
-        var current = interval
-        while current <= realDuration {
-            marks.append(current)
-            current += interval
-        }
-        return marks
-    }
-
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", mins, secs)
-    }
-}
-
-/// Колонка для одного спикера
-struct SpeakerColumn: View {
-    let turns: [DialogueTranscription.Turn]
-    let speaker: DialogueTranscription.Turn.Speaker
-    let totalDuration: TimeInterval  // визуальная длительность (сжатая)
-    let pixelsPerSecond: CGFloat
-    @ObservedObject var audioPlayer: AudioPlayerManager
-    let timelineMapper: CompressedTimelineMapper
-
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .topLeading) {
-                // Фон колонки
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(speaker == .left ? Color.blue.opacity(0.05) : Color.orange.opacity(0.05))
-
-                // Заголовок колонки
-                VStack {
-                    Text(speaker.displayName)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(speaker == .left ? .blue : .orange)
-                        .padding(.vertical, 4)
-                        .frame(maxWidth: .infinity)
-                        .background(Color.white.opacity(0.8))
-
-                    Spacer()
-                }
-
-                // Реплики, расположенные по ВИЗУАЛЬНОМУ времени (с учетом сжатия)
-                ForEach(turns) { turn in
-                    let visualStartTime = timelineMapper.visualPosition(for: turn.startTime)
-
-                    TurnBlock(turn: turn, speaker: speaker, audioPlayer: audioPlayer)
-                        .offset(y: CGFloat(visualStartTime) * pixelsPerSecond + 30) // +30 для заголовка
-                        .padding(.horizontal, 8)
-                }
-            }
-            .frame(height: CGFloat(totalDuration) * pixelsPerSecond + 30)
-        }
-        .frame(height: CGFloat(totalDuration) * pixelsPerSecond + 30)
-    }
-}
-
-/// Блок с репликой на timeline
-struct TurnBlock: View {
-    let turn: DialogueTranscription.Turn
-    let speaker: DialogueTranscription.Turn.Speaker
-    @ObservedObject var audioPlayer: AudioPlayerManager
-
-    @State private var isHovered = false
-
-    var body: some View {
-        // Текст реплики
-        Text(turn.text)
-            .font(.system(size: 11))
-            .foregroundColor(.primary)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(blockColor)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(borderColor, lineWidth: isHovered ? 2 : 1)
-                    )
-            )
-            .onTapGesture {
-                // Переход к времени реплики
-                audioPlayer.seekAndPlay(to: turn.startTime)
-                LogManager.app.info("Переход к реплике: \(turn.startTime)s")
-            }
-            .onHover { hovering in
-                isHovered = hovering
-            }
-            .help("Duration: \(String(format: "%.1f", turn.duration))s\nClick to play from this time")
-    }
-
-    private var blockColor: Color {
-        if isHovered {
-            return speaker == .left ? Color.blue.opacity(0.25) : Color.orange.opacity(0.25)
-        } else {
-            return speaker == .left ? Color.blue.opacity(0.15) : Color.orange.opacity(0.15)
-        }
-    }
-
-    private var borderColor: Color {
-        if isHovered {
-            return speaker == .left ? Color.blue.opacity(0.8) : Color.orange.opacity(0.8)
-        } else {
-            return speaker == .left ? Color.blue.opacity(0.3) : Color.orange.opacity(0.3)
-        }
-    }
-
-    private func formatTime(_ seconds: TimeInterval) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", mins, secs)
-    }
-}
 
 /// Аудио плеер для воспроизведения файла
 struct AudioPlayerView: View {
