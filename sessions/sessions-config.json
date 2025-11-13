@@ -28,7 +28,11 @@
     ],
     "bash_read_patterns": [
       "swift build",
-      "find"
+      "find",
+      "git status",
+      "git branch",
+      "git log",
+      "git diff --stat"
     ],
     "bash_write_patterns": [
       "swift build",
