@@ -33,6 +33,7 @@ public class UserSettings: ObservableObject, UserSettingsProtocol {
         static let vadAlgorithmType = "com.transcribeit.vadAlgorithmType"
         static let selectedDictionaryIds = "com.transcribeit.selectedDictionaryIds"
         static let customPrefillPrompt = "com.transcribeit.customPrefillPrompt"
+        static let baseContextPrompt = "com.transcribeit.baseContextPrompt"
     }
 
     // Встроенный промпт для программирования (русский + английский)
@@ -64,6 +65,7 @@ Metal, GPU, CPU, memory, cache, buffer, thread, async, sync, framework, library.
         // Инициализируем настройки словарей и языка
         self.selectedDictionaryIds = defaults.stringArray(forKey: Keys.selectedDictionaryIds) ?? []
         self.customPrefillPrompt = defaults.string(forKey: Keys.customPrefillPrompt) ?? ""
+        self.baseContextPrompt = defaults.string(forKey: Keys.baseContextPrompt) ?? ""
         self.transcriptionLanguage = defaults.string(forKey: Keys.transcriptionLanguage) ?? "ru"
 
         LogManager.app.info("UserSettings: Инициализация")
@@ -345,6 +347,14 @@ Metal, GPU, CPU, memory, cache, buffer, thread, async, sync, framework, library.
         }
     }
 
+    /// Базовый контекстный промпт для всех транскрипций
+    @Published public var baseContextPrompt: String {
+        didSet {
+            defaults.set(baseContextPrompt, forKey: Keys.baseContextPrompt)
+            LogManager.app.info("Базовый контекстный промпт обновлен (\(baseContextPrompt.count) символов)")
+        }
+    }
+
     /// Язык транскрипции (по умолчанию русский)
     @Published public var transcriptionLanguage: String {
         didSet {
@@ -514,6 +524,7 @@ Metal, GPU, CPU, memory, cache, buffer, thread, async, sync, framework, library.
         vadAlgorithmType = .spectralTelephone
         selectedDictionaryIds = []
         customPrefillPrompt = ""
+        baseContextPrompt = ""
         transcriptionLanguage = "ru"
         LogManager.app.info("Настройки сброшены")
     }

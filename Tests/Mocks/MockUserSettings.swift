@@ -120,6 +120,7 @@ public final class MockUserSettings: UserSettingsProtocol {
 
     public var selectedDictionaryIds: [String] = []
     public var customPrefillPrompt: String = ""
+    public var baseContextPrompt: String = ""
     public var transcriptionLanguage: String = "en"
 
     public func buildFullPrefillPrompt() -> String {
@@ -168,6 +169,7 @@ public final class MockUserSettings: UserSettingsProtocol {
         logProbThreshold = nil
         selectedDictionaryIds.removeAll()
         customPrefillPrompt = ""
+        baseContextPrompt = ""
         transcriptionLanguage = "en"
         fileTranscriptionMode = .vad
         vadAlgorithmType = .spectralDefault

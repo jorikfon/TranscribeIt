@@ -1,8 +1,9 @@
 ---
 name: m-implement-warmup-prompt-settings
 branch: feature/m-implement-warmup-prompt-settings
-status: pending
+status: completed
 created: 2025-11-13
+completed: 2025-11-13
 ---
 
 # Implement Warmup Prompt Settings
@@ -11,11 +12,12 @@ created: 2025-11-13
 Add a settings field for a warmup prompt that will be used to pre-warm the Whisper model before transcription. This should appear in the SettingsPanel near the language and VAD options, with a textarea that auto-saves user input.
 
 ## Success Criteria
-- [ ] `UserSettings` has a new persisted field for warmup prompt text
-- [ ] `SettingsPanel` UI displays a textarea for warmup prompt input with appropriate label
-- [ ] Textarea auto-saves changes to UserSettings (using `@AppStorage` or similar)
-- [ ] Warmup prompt is integrated into the transcription workflow (passed to WhisperService)
-- [ ] UI is positioned logically near language/VAD settings with consistent styling
+- [x] `UserSettings` has a new persisted field for base context prompt text (baseContextPrompt)
+- [x] `SettingsPanel` UI displays a textarea for context prompt input with appropriate label
+- [x] Textarea auto-saves changes to UserSettings via @Published property binding
+- [x] Context prompt is integrated into transcription workflow (used in FileTranscriptionService.buildContextPrompt)
+- [x] UI is positioned logically near language/VAD settings with consistent styling
+- [x] Context prompts properly tokenized using WhisperKit tokenizer
 
 ## Context Manifest
 
@@ -361,5 +363,40 @@ This implementation follows the established patterns:
 <!-- Any specific notes or requirements from the developer -->
 
 ## Work Log
-<!-- Updated as work progresses -->
-- [YYYY-MM-DD] Started task, initial research
+
+### 2025-11-13
+
+#### Completed
+- Initial implementation: Added baseContextPrompt property to UserSettings with UserDefaults persistence
+- Created TextEditor UI component in SettingsPanel with auto-save binding
+- Integrated property into WhisperService (removed after code review)
+- Updated FileTranscriptionView to pass UserSettings to SettingsPanel
+- Updated MockUserSettings for test compatibility
+- Integrated WhisperKit tokenizer for proper context prompt tokenization in FileTranscriptionService
+- Fixed mono/stereo toggle button behavior in AudioPlayerManager (reset audioFileURL before reload)
+
+#### Decisions
+- Renamed warmupPrompt → baseContextPrompt throughout codebase for clarity after code review
+- Removed fake warmup transcription from WhisperService.loadModel() - feature purpose is to provide base context for transcription segments, not warm up model
+- Used self.settings.baseContextPrompt instead of UserSettings.shared to maintain DI pattern
+- Reverted context length from 400 back to 300 characters for consistency with existing code
+
+#### Discovered
+- Initial implementation misunderstood feature purpose: should provide context for transcription segments, not warm up model after loading
+- DI violations: WhisperService was accessing UserSettings.shared instead of using injected settings
+- Context length inconsistency: Changed to 400 but should have stayed at 300
+- Mono/stereo toggle button bug: Required audioFileURL reset before reloading audio
+
+#### Files Modified
+- Sources/Utils/UserSettings.swift - Added baseContextPrompt property with persistence
+- Sources/Protocols/UserSettingsProtocol.swift - Added protocol requirement
+- Sources/UI/Views/Transcription/SettingsPanel.swift - Added TextEditor UI and userSettings binding
+- Sources/UI/Views/Transcription/FileTranscriptionView.swift - Pass userSettings to SettingsPanel
+- Sources/Services/FileTranscriptionService.swift - Integrated baseContextPrompt into buildContextPrompt(), added tokenizer for proper tokenization
+- Sources/Utils/AudioPlayerManager.swift - Fixed mono/stereo toggle button by resetting audioFileURL
+- Tests/Mocks/MockUserSettings.swift - Added baseContextPrompt property
+
+#### Next Steps
+- Feature is complete and ready for use
+- All success criteria met
+- Code review fixes applied

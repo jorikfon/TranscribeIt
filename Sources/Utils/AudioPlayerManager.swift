@@ -421,6 +421,10 @@ public class AudioPlayerManager: ObservableObject {
                 stopProgressTimer()
             }
 
+            // Сбрасываем audioFileURL чтобы loadAudio() не пропустил перезагрузку
+            audioFileURL = nil
+            audioFile = nil
+
             // Перезагружаем файл для переконфигурации графа
             try? loadAudio(from: url)
 

@@ -336,28 +336,29 @@ public class WhisperService {
     /// - Note: Контекстный промпт временно заменяет `promptText` на время транскрипции
     /// - Note: После транскрипции обновляются метрики производительности (RTF)
     public func transcribe(audioSamples: [Float], contextPrompt: String? = nil) async throws -> String {
-        // Временно сохраняем текущий prompt
-        let originalPrompt = self.promptText
-
-        // Устанавливаем контекстный промпт если передан
+        // Токенизируем контекстный промпт если передан
+        var promptTokens: [Int]? = nil
         if let context = contextPrompt, !context.isEmpty {
-            self.promptText = context
-            LogManager.transcription.debug("Используем контекстный промпт: \"\(context.prefix(100))...\"")
+            if let tokenizer = whisperKit?.tokenizer {
+                promptTokens = tokenizer.encode(text: context)
+                LogManager.transcription.debug("Токенизирован контекстный промпт: \(promptTokens?.count ?? 0) токенов из \(context.count) символов: \"\(context.prefix(100))...\"")
+            } else {
+                LogManager.transcription.warning("Tokenizer недоступен, контекстный промпт будет проигнорирован")
+            }
         }
 
-        // Вызываем основную транскрипцию
-        let result = try await transcribeInternal(audioSamples: audioSamples)
-
-        // Восстанавливаем оригинальный prompt
-        self.promptText = originalPrompt
+        // Вызываем основную транскрипцию с токенизированным промптом
+        let result = try await transcribeInternal(audioSamples: audioSamples, promptTokens: promptTokens)
 
         return result
     }
 
     /// Транскрипция аудио данных с измерением производительности (внутренний метод)
-    /// - Parameter audioSamples: Массив Float32 аудио сэмплов (16kHz mono)
+    /// - Parameters:
+    ///   - audioSamples: Массив Float32 аудио сэмплов (16kHz mono)
+    ///   - promptTokens: Опциональный массив токенов для контекстного промпта
     /// - Returns: Распознанный текст
-    private func transcribeInternal(audioSamples: [Float]) async throws -> String {
+    private func transcribeInternal(audioSamples: [Float], promptTokens: [Int]? = nil) async throws -> String {
         guard let whisperKit = whisperKit else {
             LogManager.transcription.failure("Транскрипция", message: "Модель не загружена")
             throw WhisperError.modelNotLoaded
@@ -407,6 +408,7 @@ public class WhisperService {
                 usePrefillPrompt: usePrefill,   // Используем prefill если есть словари/промпт
                 usePrefillCache: usePrefill,    // Кэширование prefill
                 detectLanguage: false,          // Отключаем автодетект, используем язык из настроек
+                promptTokens: promptTokens,     // Контекстный промпт в виде токенов
                 compressionRatioThreshold: useQualityMode ? settings.compressionRatioThreshold : nil,
                 logProbThreshold: useQualityMode ? settings.logProbThreshold : nil,
                 noSpeechThreshold: useQualityMode ? 0.6 : nil  // Фильтр тишины
@@ -414,6 +416,9 @@ public class WhisperService {
 
             // Логирование настроек
             LogManager.transcription.info("🌐 Language: \(settings.transcriptionLanguage)")
+            if let tokens = promptTokens, !tokens.isEmpty {
+                LogManager.transcription.info("💬 Context prompt tokens: \(tokens.count)")
+            }
             if !settings.selectedDictionaryIds.isEmpty {
                 LogManager.transcription.info("📚 Active dictionaries: \(settings.selectedDictionaryIds.joined(separator: ", "))")
             }

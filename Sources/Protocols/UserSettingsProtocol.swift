@@ -85,6 +85,9 @@ public protocol UserSettingsProtocol {
     /// Кастомный промпт для прогрева модели
     var customPrefillPrompt: String { get set }
 
+    /// Базовый контекстный промпт для всех транскрипций
+    var baseContextPrompt: String { get set }
+
     /// Язык транскрипции
     var transcriptionLanguage: String { get set }
 

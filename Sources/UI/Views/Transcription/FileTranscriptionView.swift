@@ -70,6 +70,7 @@ struct FileTranscriptionView: View {
                 selectedVADAlgorithm: $selectedVADAlgorithm,
                 selectedLanguage: $selectedLanguage,
                 modelManager: modelManager,
+                userSettings: userSettings,
                 onRetranscribe: handleRetranscribe
             )
             .transition(.move(edge: .top).combined(with: .opacity))

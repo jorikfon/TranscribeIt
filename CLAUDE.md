@@ -225,6 +225,7 @@ public actor AudioCache {
 - Performance metrics (Real-Time Factor tracking)
 - Audio normalization
 - Vocabulary corrections integration
+- Context prompt tokenization via WhisperKit tokenizer
 
 **Key Methods**:
 ```swift
@@ -236,6 +237,16 @@ public func reloadModel(newModelSize: String) async throws
 
 **Dependencies**: `VocabularyManagerProtocol`, `AudioNormalizer`
 
+**Context Prompt Tokenization**:
+When a context prompt is provided to `transcribe()`, it's tokenized using WhisperKit's built-in tokenizer:
+```swift
+if let tokenizer = whisperKit?.tokenizer {
+    promptTokens = tokenizer.encode(text: contextPrompt)
+    // Tokens passed to transcribeInternal() for proper context injection
+}
+```
+This ensures the context is properly understood by the Whisper model decoder.
+
 ### 2. FileTranscriptionService (`Sources/Services/FileTranscriptionService.swift`)
 
 **Responsibilities**:
@@ -244,10 +255,12 @@ public func reloadModel(newModelSize: String) async throws
 - Stereo channel separation with VAD
 - Context-aware segment transcription
 - Real-time progress tracking
+- Base context prompt injection for domain/terminology understanding
 
 **Key Methods**:
 ```swift
 public func transcribeFile(url: URL, updateProgress: @escaping (Double) -> Void) async throws -> DialogueTranscription
+private func buildContextPrompt(from turns: [DialogueTranscription.Turn], maxTurns: Int = 5) -> String
 ```
 
 **Dependencies**: `WhisperService`, `UserSettingsProtocol`, `AudioCache`
@@ -255,8 +268,16 @@ public func transcribeFile(url: URL, updateProgress: @escaping (Double) -> Void)
 **Flow**:
 1. Load audio via AudioCache (checks cache first)
 2. Detect voice activity segments with VAD
-3. Transcribe each segment with context from previous segments
-4. Update ViewModel progress in real-time
+3. Build context prompt combining base context + recent dialogue history
+4. Transcribe each segment with context from previous segments
+5. Update ViewModel progress in real-time
+
+**Context Prompt System**:
+The service builds intelligent context prompts for each transcription segment:
+- **Base context** (`settings.baseContextPrompt`): Domain/terminology context applied to all segments (e.g., "Medical consultation transcript with technical terms")
+- **Dialogue history**: Last 5 turns from previous speakers to maintain conversation flow
+- **Length limiting**: Context truncated to 300 characters for optimal performance
+- **Mono transcription**: Base context prompt applied directly for single-channel audio
 
 ### 3. BatchTranscriptionService (`Sources/Services/BatchTranscriptionService.swift`)
 
@@ -309,11 +330,19 @@ public func transcribeFile(url: URL, updateProgress: @escaping (Double) -> Void)
 - Progress bar with click-to-seek
 - Mono/stereo toggle
 
+**SettingsPanel** (`Sources/UI/Views/Transcription/SettingsPanel.swift`):
+- Whisper model selection (Tiny through Large-v3)
+- Language picker (Auto-detect, Russian, English)
+- VAD algorithm/segmentation method picker
+- Base context prompt text editor (auto-saves to UserSettings)
+- Retranscribe button for applying new settings
+- Requires both `modelManager` and `userSettings` as dependencies
+
 **View Composition Hierarchy**:
 ```
 FileTranscriptionView
 ├── HeaderView (file name, status, actions)
-├── SettingsPanel (model, VAD, transcription options)
+├── SettingsPanel (model, language, VAD, base context prompt)
 ├── ProgressSection (model loading, transcription progress)
 └── ContentView
     ├── TranscriptionContentView
@@ -362,7 +391,37 @@ AFTER:  [Speaker 1: 0-2s] -0.15s- [Speaker 2: 2.15-4.15s]
 
 **Recommended Model**: `small` (~250 MB) - best balance of accuracy and performance
 
-### 3. Vocabulary Management
+### 3. User Settings Management
+
+**UserSettings** (`Sources/Utils/UserSettings.swift`):
+- Implements `UserSettingsProtocol` for dependency injection
+- Persists all application preferences via UserDefaults
+- Uses `@Published` properties for SwiftUI reactivity
+- Auto-saves changes via `didSet` observers
+
+**Key Settings**:
+- **Model & Language**: Selected Whisper model, transcription language
+- **VAD Configuration**: Algorithm type, segmentation mode (VAD/Batch)
+- **Base Context Prompt** (`baseContextPrompt`): Domain/terminology context for all transcriptions
+  - Stored in: `com.transcribeit.baseContextPrompt`
+  - Applied to both mono and stereo transcriptions
+  - Combined with dialogue history in `FileTranscriptionService.buildContextPrompt()`
+  - Example: "Medical consultation with technical terminology" or "Customer support call center"
+- **Custom Prefill Prompt** (`customPrefillPrompt`): Additional vocabulary terms for model priming (separate from base context)
+- **Dictionary Selection**: Active vocabulary dictionaries for corrections
+- **Quality Enhancement**: Temperature fallback, compression ratio thresholds
+
+**Pattern**: All persisted properties follow the same structure:
+```swift
+@Published public var baseContextPrompt: String {
+    didSet {
+        defaults.set(baseContextPrompt, forKey: Keys.baseContextPrompt)
+        LogManager.app.info("Base context prompt updated (\(baseContextPrompt.count) characters)")
+    }
+}
+```
+
+### 4. Vocabulary Management
 
 **VocabularyManager** (`Sources/Utils/VocabularyManager.swift`):
 - Implements `VocabularyManagerProtocol`
@@ -372,7 +431,7 @@ AFTER:  [Speaker 1: 0-2s] -0.15s- [Speaker 2: 2.15-4.15s]
 
 **Default Corrections**: Technical terms (git, API, JSON), brand names (Apple, Microsoft), common Russian speech mistakes
 
-### 4. Audio Processing
+### 5. Audio Processing
 
 **AudioPlayerManager** (`Sources/Utils/AudioPlayerManager.swift`):
 - AVAudioEngine-based playback
@@ -393,7 +452,7 @@ AFTER:  [Speaker 1: 0-2s] -0.15s- [Speaker 2: 2.15-4.15s]
 
 Used for dual-channel speaker separation and segment boundary detection.
 
-### 5. Export System
+### 6. Export System
 
 **ExportManager** (`Sources/Utils/ExportManager.swift`):
 
@@ -586,12 +645,21 @@ print("Visual duration: \(mapper.totalVisualDuration(realDuration: duration))")
 
 - Dependency injection: `Sources/DI/DependencyContainer.swift`
 - File transcription: `Sources/Services/FileTranscriptionService.swift`
+  - Context prompt building: `buildContextPrompt()` method
+- WhisperKit integration: `Sources/Services/WhisperService.swift`
+  - Context tokenization: `transcribe(audioSamples:contextPrompt:)` method
 - MVVM ViewModel: `Sources/UI/ViewModels/FileTranscriptionViewModel.swift`
+- Settings UI: `Sources/UI/Views/Transcription/SettingsPanel.swift`
+  - Base context prompt TextEditor component
+- User preferences: `Sources/Utils/UserSettings.swift`
+  - `baseContextPrompt` property with UserDefaults persistence
 - Timeline compression: `Sources/Utils/Timeline/TimelineMapper.swift`
 - Audio caching: `Sources/Utils/Audio/AudioCache.swift`
 - Typed errors: `Sources/Errors/TranscriptionError.swift`
-- Protocol abstractions: `Sources/Protocols/VocabularyManagerProtocol.swift`
-- Mock implementations: `Tests/Mocks/MockVocabularyManager.swift`
+- Protocol abstractions: `Sources/Protocols/UserSettingsProtocol.swift`
+  - `baseContextPrompt` protocol requirement
+- Mock implementations: `Tests/Mocks/MockUserSettings.swift`
+  - `baseContextPrompt` test property
 - Audio player: `Sources/Utils/AudioPlayerManager.swift`
 - Model management: `Sources/Utils/ModelManager.swift`
 

@@ -33,6 +33,7 @@ TranscribeIt is a native macOS application designed specifically for **transcrib
 - Change settings without restarting transcription
 - **Whisper Models**: Tiny, Base, Small, Medium, Large-v2, Large-v3
 - **Languages**: Auto-detect, Russian, English
+- **Base Context Prompt**: Provide domain/terminology context to improve accuracy (e.g., "Medical consultation" or "Technical support call")
 - **Segmentation Methods**:
   - 7 VAD algorithms (Spectral, Adaptive, Standard)
   - Batch mode (fixed-size chunks)
@@ -94,6 +95,7 @@ swift build -c release
 5. **Adjust settings in real-time** (click gear icon):
    - Change Whisper model (Tiny → Large)
    - Select language (Auto/Russian/English)
+   - Add base context prompt for domain-specific terminology
    - Choose segmentation method (VAD algorithms or Batch mode)
    - Click **Retranscribe** to restart with new settings
 6. Edit timestamps/text as needed

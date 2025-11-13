@@ -523,7 +523,11 @@ public class FileTranscriptionService {
             // Моно: обычная транскрипция
             let audioSamples = try await loadAudio(from: url)
             let totalDuration = TimeInterval(audioSamples.count) / 16000.0
-            let text = try await whisperService.transcribe(audioSamples: audioSamples)
+
+            // Используем базовый контекстный промпт если указан
+            let baseContextPrompt = self.settings.baseContextPrompt
+            let contextPrompt = baseContextPrompt.isEmpty ? nil : baseContextPrompt
+            let text = try await whisperService.transcribe(audioSamples: audioSamples, contextPrompt: contextPrompt)
 
             LogManager.app.info("Моно транскрипция завершена: \(text.count) символов")
 
@@ -826,27 +830,37 @@ public class FileTranscriptionService {
     /// НОВОЕ: Формирует контекстный промпт из предыдущих реплик диалога
     /// Помогает Whisper лучше распознавать имена, термины и контекст разговора
     private func buildContextPrompt(from turns: [DialogueTranscription.Turn], maxTurns: Int = 5) -> String {
+        var contextParts: [String] = []
+
+        // Добавляем базовый контекстный промпт если указан
+        let baseContextPrompt = self.settings.baseContextPrompt
+        if !baseContextPrompt.isEmpty {
+            contextParts.append(baseContextPrompt)
+        }
+
         // Берем последние N реплик
         let recentTurns = Array(turns.suffix(maxTurns))
 
-        if recentTurns.isEmpty {
-            return ""
+        if !recentTurns.isEmpty {
+            // Формируем контекст в виде диалога
+            let dialogueContext = recentTurns.map { turn in
+                let speakerName = turn.speaker == .left ? "Speaker 1" : "Speaker 2"
+                return "\(speakerName): \(turn.text)"
+            }.joined(separator: " ")
+            contextParts.append(dialogueContext)
         }
 
-        // Формируем контекст в виде диалога
-        let context = recentTurns.map { turn in
-            let speakerName = turn.speaker == .left ? "Speaker 1" : "Speaker 2"
-            return "\(speakerName): \(turn.text)"
-        }.joined(separator: " ")
+        // Объединяем все части контекста
+        let fullContext = contextParts.joined(separator: ". ")
 
-        // Ограничиваем длину контекста (примерно 200-300 символов оптимально)
+        // Ограничиваем длину контекста (примерно 300 символов оптимально)
         let maxLength = 300
-        if context.count > maxLength {
-            let endIndex = context.index(context.startIndex, offsetBy: maxLength)
-            return String(context[..<endIndex]) + "..."
+        if fullContext.count > maxLength {
+            let endIndex = fullContext.index(fullContext.startIndex, offsetBy: maxLength)
+            return String(fullContext[..<endIndex]) + "..."
         }
 
-        return context
+        return fullContext
     }
 
     /// Загружает стерео аудио (сохраняя оба канала)

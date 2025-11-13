@@ -8,6 +8,7 @@ struct SettingsPanel: View {
     @Binding var selectedVADAlgorithm: UserSettings.VADAlgorithmType
     @Binding var selectedLanguage: String
     @ObservedObject var modelManager: ModelManager
+    @ObservedObject var userSettings: UserSettings
     var onRetranscribe: () -> Void
 
     var body: some View {
@@ -93,6 +94,25 @@ struct SettingsPanel: View {
                         .foregroundColor(.secondary.opacity(Constants.descriptionOpacity))
                 }
                 .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // Warmup prompt section
+            VStack(alignment: .leading, spacing: Constants.labelVerticalSpacing) {
+                Text("Base Context Prompt")
+                    .font(.system(size: Constants.labelFontSize, weight: .medium))
+                    .foregroundColor(.secondary)
+
+                Text("Base context prompt used for all transcriptions (helps model understand domain/terminology)")
+                    .font(.system(size: Constants.descriptionFontSize))
+                    .foregroundColor(.secondary.opacity(Constants.descriptionOpacity))
+
+                TextEditor(text: Binding(
+                    get: { userSettings.baseContextPrompt },
+                    set: { userSettings.baseContextPrompt = $0 }
+                ))
+                .font(.system(size: 12, design: .monospaced))
+                .frame(height: 60)
+                .border(Color.secondary.opacity(0.2))
             }
 
             // Кнопка перезапуска

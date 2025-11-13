@@ -26,8 +26,14 @@
       "MultiEdit",
       "NotebookEdit"
     ],
-    "bash_read_patterns": [],
-    "bash_write_patterns": [],
+    "bash_read_patterns": [
+      "swift build",
+      "find"
+    ],
+    "bash_write_patterns": [
+      "swift build",
+      "./build_app.sh"
+    ],
     "extrasafe": true
   },
   "git_preferences": {
