@@ -97,6 +97,9 @@ public class BatchTranscriptionService {
         var contextPrompt = ""  // Накапливаем контекст для следующих чанков
 
         for (index, chunk) in chunks.enumerated() {
+            // Проверяем отмену перед обработкой каждого чанка
+            try Task.checkCancellation()
+
             // Передаем предыдущий контекст для улучшения связности
             let text = try await whisperService.transcribe(
                 audioSamples: chunk.samples,
@@ -161,6 +164,9 @@ public class BatchTranscriptionService {
         let maxChunks = max(leftChunks.count, rightChunks.count)
 
         for index in 0..<maxChunks {
+            // Проверяем отмену перед обработкой каждой пары чанков
+            try Task.checkCancellation()
+
             // Транскрибируем левый канал (если есть)
             if index < leftChunks.count {
                 let chunk = leftChunks[index]
@@ -302,7 +308,7 @@ public class BatchTranscriptionService {
         let frameCount = Int(file.length)
 
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
-            throw NSError(domain: "BatchTranscriptionService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Не удалось создать буфер"])
+            throw TranscriptionError.bufferCreationFailed
         }
 
         try file.read(into: buffer)
@@ -340,23 +346,21 @@ public class BatchTranscriptionService {
     private func loadStereoChannels(file: AVAudioFile, targetSampleRate: Double) throws -> ([Float], [Float]) {
         let format = file.processingFormat
         let frameCount = Int(file.length)
+        let fileURL = file.url
 
         guard format.channelCount == 2 else {
-            throw NSError(domain: "BatchTranscriptionService", code: 2,
-                        userInfo: [NSLocalizedDescriptionKey: "Файл не стерео"])
+            throw TranscriptionError.notStereoFile(fileURL)
         }
 
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
-            throw NSError(domain: "BatchTranscriptionService", code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "Не удалось создать буфер"])
+            throw TranscriptionError.bufferCreationFailed
         }
 
         try file.read(into: buffer)
 
         // Извлекаем каналы
         guard let channelData = buffer.floatChannelData else {
-            throw NSError(domain: "BatchTranscriptionService", code: 3,
-                        userInfo: [NSLocalizedDescriptionKey: "Не удалось получить данные каналов"])
+            throw TranscriptionError.channelDataUnavailable(fileURL)
         }
 
         let frameLength = Int(buffer.frameLength)

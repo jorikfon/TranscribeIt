@@ -5,24 +5,53 @@ import TranscribeItCore
 /// Главный делегат приложения TranscribeIt
 /// Управляет жизненным циклом и координирует сервисы транскрибации
 class AppDelegate: NSObject, NSApplicationDelegate {
-    // Сервисы
+    // MARK: - Dependency Injection
+
+    /// Контейнер зависимостей для управления сервисами
+    private let dependencies: DependencyContainer
+
+    // MARK: - Services
+
+    /// Сервис Whisper для транскрибации
     private var whisperService: WhisperService?
+
+    /// Сервис транскрибации файлов
     private var fileTranscriptionService: FileTranscriptionService?
+
+    /// Сервис пакетной транскрибации
     private var batchTranscriptionService: BatchTranscriptionService?
 
-    // Главное окно транскрибации
+    // MARK: - Windows
+
+    /// Главное окно транскрибации
     private var mainWindow: MainWindow?
 
-    // Окно настроек
+    /// Окно настроек
     private var settingsWindowController: SettingsWindowController?
 
-    // Состояние загрузки модели
+    // MARK: - State
+
+    /// Состояние загрузки модели
     private var isModelLoaded: Bool = false
     private var isModelLoading: Bool = false
     private var modelLoadError: Error?
 
-    // CLI режим
+    /// Режим запуска приложения (GUI или CLI)
     private var launchMode: CommandLineHandler.LaunchMode = .gui
+
+    /// Текущая активная задача транскрибации (для отмены при перезапуске)
+    private var currentTranscriptionTask: Task<Void, Never>?
+
+    // MARK: - Initialization
+
+    /// Инициализирует AppDelegate с контейнером зависимостей
+    ///
+    /// - Parameter dependencies: Контейнер зависимостей
+    init(dependencies: DependencyContainer) {
+        self.dependencies = dependencies
+        super.init()
+        LogManager.app.info("AppDelegate инициализирован с DependencyContainer")
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         LogManager.app.info("=== TranscribeIt Starting ===")
@@ -34,12 +63,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Применяем настройки из командной строки
         if let modelSize = parseResult.modelSize {
-            ModelManager.shared.saveCurrentModel(modelSize)
+            dependencies.modelManager.saveCurrentModel(modelSize)
             LogManager.app.info("CLI: Использование модели \(modelSize)")
         }
 
         if let vadEnabled = parseResult.vadEnabled {
-            UserSettings.shared.fileTranscriptionMode = vadEnabled ? .vad : .batch
+            dependencies.userSettings.fileTranscriptionMode = vadEnabled ? .vad : .batch
             LogManager.app.info("CLI: VAD режим: \(vadEnabled)")
         }
 
@@ -111,31 +140,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         openSettings()
     }
 
-    // MARK: - Initialization
+    // MARK: - Service Initialization
 
-    /// Инициализация всех сервисов
+    /// Инициализация всех сервисов через DependencyContainer
+    ///
+    /// Создаёт экземпляры WhisperService, FileTranscriptionService и BatchTranscriptionService
+    /// используя настройки из контейнера зависимостей.
     private func initializeServices() {
-        // Используем сохраненную настройку модели из ModelManager
-        let modelSize = ModelManager.shared.currentModel
-        whisperService = WhisperService(modelSize: modelSize)
-        LogManager.app.info("Инициализация WhisperService с моделью из настроек: \(modelSize)")
+        LogManager.app.begin("Инициализация сервисов через DependencyContainer")
 
-        // Инициализируем сервис транскрипции файлов
+        // Создаём WhisperService через фабричный метод
+        whisperService = dependencies.makeWhisperService()
+
+        // Инициализируем сервисы транскрипции
         if let whisperService = whisperService {
-            fileTranscriptionService = FileTranscriptionService(whisperService: whisperService)
-            batchTranscriptionService = BatchTranscriptionService(whisperService: whisperService)
+            fileTranscriptionService = dependencies.makeFileTranscriptionService(whisperService: whisperService)
+            batchTranscriptionService = dependencies.makeBatchTranscriptionService(whisperService: whisperService)
         }
 
-        LogManager.app.success("Все сервисы инициализированы")
+        LogManager.app.success("Все сервисы инициализированы через DI")
     }
 
     /// Асинхронная фоновая загрузка модели Whisper
     private func asyncInitialization() async {
         guard let whisperService = whisperService else {
             await MainActor.run {
-                self.modelLoadError = NSError(domain: "TranscribeIt", code: -1, userInfo: [
-                    NSLocalizedDescriptionKey: "Failed to initialize WhisperService"
-                ])
+                self.modelLoadError = TranscriptionError.serviceNotInitialized("WhisperService")
             }
             return
         }
@@ -157,6 +187,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.isModelLoaded = true
                 self.isModelLoading = false
                 self.mainWindow?.viewModel.modelLoadingStatus = "Model ready"
+
+                // Обновляем статус GPU
+                let gpuStatus = whisperService.isNeuralEngineAvailable ? "ANE+GPU" :
+                                whisperService.isMetalAvailable ? "GPU" : "CPU"
+                self.mainWindow?.viewModel.gpuStatus = gpuStatus
+                self.mainWindow?.viewModel.modelName = whisperService.currentModelSize
             }
         } catch {
             LogManager.app.error("Ошибка загрузки модели: \(error)")
@@ -181,8 +217,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Создаем главное окно
-        let window = MainWindow()
+        // Создаем главное окно с общим AudioCache из DI container
+        let window = MainWindow(audioCache: dependencies.audioCache)
 
         // Обработчик запуска транскрибации
         window.onStartTranscription = { [weak self, weak window] files in
@@ -226,119 +262,236 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Transcription
 
     /// Выполняет транскрибацию файла (только один файл)
+    ///
+    /// Координирует процесс транскрибации: ожидает загрузки модели,
+    /// выполняет транскрибацию и обрабатывает ошибки.
+    ///
+    /// - Parameters:
+    ///   - files: Массив URL файлов (используется только первый файл)
+    ///   - window: Главное окно для обновления UI
     private func performTranscription(files: [URL], window: MainWindow) {
-        guard let fileService = fileTranscriptionService else {
+        guard fileTranscriptionService != nil else {
             LogManager.app.error("FileTranscriptionService не инициализирован")
             return
         }
 
-        // Берём только первый файл
         guard let file = files.first else {
             LogManager.app.error("Нет файлов для транскрибации")
             return
         }
 
+        // ВАЖНО: Отменяем предыдущую транскрибацию если она ещё выполняется
+        if let previousTask = currentTranscriptionTask {
+            LogManager.app.warning("Отменяем предыдущую транскрибацию перед запуском новой")
+            previousTask.cancel()
+            currentTranscriptionTask = nil
+        }
+
         LogManager.app.info("Начинаем транскрибацию файла: \(file.lastPathComponent)")
 
-        Task {
-            // Ждём загрузки модели, если она ещё не загружена
-            if !isModelLoaded {
-                await MainActor.run {
-                    window.viewModel.modelLoadingStatus = isModelLoading ? "Waiting for model to load..." : "Loading model..."
-                }
-
-                LogManager.app.info("Модель ещё не загружена, ожидаем...")
-
-                // Ждём завершения загрузки (проверяем каждые 100ms)
-                while isModelLoading {
-                    try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-                }
-
-                // Проверяем, успешно ли загрузилась модель
-                if let error = modelLoadError {
-                    await MainActor.run {
-                        window.viewModel.setError(
-                            file: file.lastPathComponent,
-                            error: "Model load failed: \(error.localizedDescription)"
-                        )
-                    }
-                    return
-                }
-
-                LogManager.app.success("Модель загружена, начинаем транскрибацию")
-            }
-
-            // Обновляем модель и VAD информацию
-            await MainActor.run {
-                window.viewModel.setModel(ModelManager.shared.currentModel)
-                window.viewModel.vadInfo = UserSettings.shared.vadAlgorithmType.displayName
-                window.viewModel.modelLoadingStatus = nil
-                window.viewModel.startTranscription(file: file)
-            }
-
+        currentTranscriptionTask = Task {
+            // 1. Ожидание загрузки модели
             do {
-                // Обновляем прогресс
+                try await waitForModelLoading(window: window, file: file)
+            } catch is CancellationError {
+                LogManager.app.info("Транскрибация отменена пользователем (этап загрузки модели)")
                 await MainActor.run {
-                    window.viewModel.updateProgress(file: file.lastPathComponent, progress: 0.0)
+                    window.viewModel.reset()
                 }
-
-                // Создаём BatchTranscriptionService для получения промежуточного прогресса
-                if let whisperService = whisperService {
-                    let batchService = BatchTranscriptionService(whisperService: whisperService)
-
-                    // Подписываемся на обновления прогресса
-                    batchService.onProgressUpdate = { [weak window] fileName, progress, partialDialogue in
-                        Task { @MainActor in
-                            window?.viewModel.updateProgress(file: fileName, progress: progress)
-                            LogManager.app.debug("Progress: \(Int(progress * 100))%")
-                        }
-                    }
-
-                    // Используем batch service для транскрибации с прогрессом
-                    let dialogue = try await batchService.transcribe(url: file)
-
-                    // Передаём DialogueTranscription напрямую в ViewModel
-                    await MainActor.run {
-                        window.viewModel.setDialogue(
-                            file: file.lastPathComponent,
-                            dialogue: dialogue,
-                            fileURL: file
-                        )
-                    }
-                } else {
-                    // Если whisperService недоступен, используем старый метод
-                    let dialogue = try await fileService.transcribeFileWithDialogue(at: file)
-
-                    await MainActor.run {
-                        window.viewModel.setDialogue(
-                            file: file.lastPathComponent,
-                            dialogue: dialogue,
-                            fileURL: file
-                        )
-                    }
-                }
-
-                // Обновляем прогресс до 100%
-                await MainActor.run {
-                    window.viewModel.updateProgress(file: file.lastPathComponent, progress: 1.0)
-                }
-
-                LogManager.app.success("Транскрибация файла \(file.lastPathComponent) завершена")
+                return
             } catch {
-                LogManager.app.error("Ошибка транскрибации файла \(file.lastPathComponent): \(error)")
+                return  // Ошибка уже обработана в waitForModelLoading
+            }
 
+            // 2. Выполнение транскрибации
+            do {
+                try await executeTranscription(file: file, window: window)
+                LogManager.app.success("Транскрибация файла \(file.lastPathComponent) завершена")
+            } catch is CancellationError {
+                LogManager.app.info("Транскрибация отменена пользователем (этап транскрибации)")
                 await MainActor.run {
-                    window.viewModel.setError(
-                        file: file.lastPathComponent,
-                        error: error.localizedDescription
-                    )
+                    window.viewModel.reset()
                 }
+                return
+            } catch {
+                // 3. Обработка ошибок
+                await handleTranscriptionError(error, file: file, window: window)
             }
 
             // Завершаем транскрибацию
             await MainActor.run {
                 window.viewModel.complete()
                 LogManager.app.info("Транскрибация файла завершена")
+            }
+
+            // Сбрасываем ссылку на завершенную задачу
+            currentTranscriptionTask = nil
+        }
+    }
+
+    /// Ожидает загрузки модели Whisper перед началом транскрибации
+    ///
+    /// Если модель ещё не загружена, метод ожидает завершения загрузки.
+    /// При ошибке загрузки обновляет UI с сообщением об ошибке.
+    ///
+    /// - Parameters:
+    ///   - window: Главное окно для обновления статуса
+    ///   - file: Файл для транскрибации (для отображения ошибки)
+    /// - Throws: Пробрасывает ошибку если модель не загрузилась
+    private func waitForModelLoading(window: MainWindow, file: URL) async throws {
+        guard !isModelLoaded else {
+            // Модель уже загружена
+            return
+        }
+
+        await MainActor.run {
+            window.viewModel.modelLoadingStatus = isModelLoading ? "Waiting for model to load..." : "Loading model..."
+        }
+
+        LogManager.app.info("Модель ещё не загружена, ожидаем...")
+
+        // Ждём завершения загрузки (проверяем каждые 100ms)
+        while isModelLoading {
+            // Проверяем отмену во время ожидания модели
+            try Task.checkCancellation()
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        }
+
+        // Проверяем, успешно ли загрузилась модель
+        if let error = modelLoadError {
+            await MainActor.run {
+                window.viewModel.setError(
+                    file: file.lastPathComponent,
+                    error: "Model load failed: \(error.localizedDescription)"
+                )
+            }
+            throw error
+        }
+
+        LogManager.app.success("Модель загружена, начинаем транскрибацию")
+    }
+
+    /// Выполняет транскрибацию аудио файла
+    ///
+    /// Создаёт BatchTranscriptionService, подписывается на обновления прогресса
+    /// и выполняет транскрибацию с отображением прогресса в UI.
+    ///
+    /// - Parameters:
+    ///   - file: URL файла для транскрибации
+    ///   - window: Главное окно для обновления прогресса и результата
+    /// - Throws: Пробрасывает ошибки транскрибации (TranscriptionError, WhisperError)
+    private func executeTranscription(file: URL, window: MainWindow) async throws {
+        guard let fileService = fileTranscriptionService else {
+            throw TranscriptionError.serviceNotInitialized("FileTranscriptionService")
+        }
+
+        // Обновляем модель и VAD информацию через DI
+        await MainActor.run {
+            window.viewModel.setModel(dependencies.modelManager.currentModel)
+            window.viewModel.vadInfo = dependencies.userSettings.vadAlgorithmType.displayName
+            window.viewModel.modelLoadingStatus = nil
+            window.viewModel.startTranscription(file: file)
+        }
+
+        // Обновляем прогресс
+        await MainActor.run {
+            window.viewModel.updateProgress(file: file.lastPathComponent, progress: 0.0)
+        }
+
+        // Создаём BatchTranscriptionService для получения промежуточного прогресса
+        if let whisperService = whisperService {
+            let batchService = BatchTranscriptionService(whisperService: whisperService)
+
+            // Подписываемся на обновления прогресса
+            batchService.onProgressUpdate = { [weak window] fileName, progress, partialDialogue in
+                Task { @MainActor in
+                    window?.viewModel.updateProgress(file: fileName, progress: progress)
+                    LogManager.app.debug("Progress: \(Int(progress * 100))%")
+                }
+            }
+
+            // Используем batch service для транскрибации с прогрессом
+            let dialogue = try await batchService.transcribe(url: file)
+
+            // Передаём DialogueTranscription напрямую в ViewModel
+            await MainActor.run {
+                window.viewModel.setDialogue(
+                    file: file.lastPathComponent,
+                    dialogue: dialogue,
+                    fileURL: file
+                )
+            }
+        } else {
+            // Если whisperService недоступен, используем старый метод
+            let dialogue = try await fileService.transcribeFileWithDialogue(at: file)
+
+            await MainActor.run {
+                window.viewModel.setDialogue(
+                    file: file.lastPathComponent,
+                    dialogue: dialogue,
+                    fileURL: file
+                )
+            }
+        }
+
+        // Обновляем прогресс до 100%
+        await MainActor.run {
+            window.viewModel.updateProgress(file: file.lastPathComponent, progress: 1.0)
+        }
+    }
+
+    /// Обрабатывает ошибки транскрибации с учётом их типов
+    ///
+    /// Распознаёт типизированные ошибки (TranscriptionError, WhisperError)
+    /// и добавляет recovery suggestions для пользователя.
+    ///
+    /// - Parameters:
+    ///   - error: Ошибка транскрибации
+    ///   - file: URL файла, для которого произошла ошибка
+    ///   - window: Главное окно для отображения ошибки
+    private func handleTranscriptionError(_ error: Error, file: URL, window: MainWindow) async {
+        if let transcriptionError = error as? TranscriptionError {
+            // Обработка typed TranscriptionError с детальной информацией
+            LogManager.app.error("Ошибка транскрибации файла \(file.lastPathComponent): \(transcriptionError)")
+
+            await MainActor.run {
+                var errorMessage = transcriptionError.localizedDescription
+
+                // Добавляем recovery suggestion если есть
+                if let suggestion = transcriptionError.recoverySuggestion {
+                    errorMessage += "\n\n💡 \(suggestion)"
+                }
+
+                window.viewModel.setError(
+                    file: file.lastPathComponent,
+                    error: errorMessage
+                )
+            }
+        } else if let whisperError = error as? WhisperError {
+            // Обработка WhisperError
+            LogManager.app.error("Ошибка Whisper для файла \(file.lastPathComponent): \(whisperError)")
+
+            await MainActor.run {
+                var errorMessage = whisperError.localizedDescription
+
+                if let suggestion = whisperError.recoverySuggestion {
+                    errorMessage += "\n\n💡 \(suggestion)"
+                }
+
+                window.viewModel.setError(
+                    file: file.lastPathComponent,
+                    error: errorMessage
+                )
+            }
+        } else {
+            // Fallback для других ошибок
+            LogManager.app.error("Неизвестная ошибка транскрибации файла \(file.lastPathComponent): \(error)")
+
+            await MainActor.run {
+                window.viewModel.setError(
+                    file: file.lastPathComponent,
+                    error: error.localizedDescription
+                )
             }
         }
     }
@@ -359,14 +512,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try await whisperService.loadModel()
             LogManager.app.success("CLI: Модель загружена")
+        } catch let whisperError as WhisperError {
+            LogManager.app.error("CLI: Ошибка загрузки модели: \(whisperError)")
+
+            var errorMessage = whisperError.localizedDescription
+            if let suggestion = whisperError.recoverySuggestion {
+                errorMessage += " Suggestion: \(suggestion)"
+            }
+
+            print("{\"error\": \"Failed to load model\", \"details\": \"\(errorMessage)\"}")
+            exit(1)
         } catch {
-            LogManager.app.error("CLI: Ошибка загрузки модели: \(error)")
-            print("{\"error\": \"Failed to load model: \(error.localizedDescription)\"}")
+            LogManager.app.error("CLI: Неизвестная ошибка загрузки модели: \(error)")
+            print("{\"error\": \"Failed to load model\", \"details\": \"\(error.localizedDescription)\"}")
             exit(1)
         }
 
-        // Выполняем транскрибацию
-        let vadEnabled = UserSettings.shared.fileTranscriptionMode == .vad
+        // Выполняем транскрибацию используя настройки из DI
+        let vadEnabled = dependencies.userSettings.fileTranscriptionMode == .vad
         let results = await batchService.transcribeMultipleFiles(files: files, vadEnabled: vadEnabled)
 
         // Выводим результаты
