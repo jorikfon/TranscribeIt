@@ -2,7 +2,7 @@ import Foundation
 
 /// Менеджер для управления словарем специальных терминов и коррекции транскрипций
 /// Используется для исправления часто встречающихся ошибок распознавания
-public class VocabularyManager {
+public class VocabularyManager: VocabularyManagerProtocol {
     public static let shared = VocabularyManager()
 
     /// Словарь замен: ключ - ошибочное распознавание, значение - правильный вариант

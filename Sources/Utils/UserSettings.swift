@@ -15,7 +15,7 @@ public struct CustomVocabulary: Codable, Identifiable {
 
 /// Менеджер пользовательских настроек приложения
 /// Использует UserDefaults для персистентного хранения
-public class UserSettings: ObservableObject {
+public class UserSettings: ObservableObject, UserSettingsProtocol {
     public static let shared = UserSettings()
 
     private let defaults = UserDefaults.standard

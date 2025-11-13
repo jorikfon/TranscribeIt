@@ -248,9 +248,9 @@ actor ExportManager {
 
     /// Форматирование длительности в читаемый вид
     private func formatDuration(_ duration: TimeInterval) -> String {
-        let hours = Int(duration) / 3600
-        let minutes = (Int(duration) % 3600) / 60
-        let seconds = Int(duration) % 60
+        let hours = Int(duration) / ServiceConstants.Time.secondsPerHour
+        let minutes = (Int(duration) % ServiceConstants.Time.secondsPerHour) / ServiceConstants.Time.secondsPerMinute
+        let seconds = Int(duration) % ServiceConstants.Time.secondsPerMinute
 
         if hours > 0 {
             return String(format: "%d:%02d:%02d", hours, minutes, seconds)

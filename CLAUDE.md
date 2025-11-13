@@ -9,303 +9,594 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Key Features
 - **Dual-channel speaker separation**: Left and right audio channels are processed separately to distinguish between two speakers
 - **On-device transcription**: Uses WhisperKit with Metal GPU acceleration for privacy and speed
-- **Timeline visualization**: Synchronized view showing both speakers with clickable segments for audio playback
+- **Timeline visualization**: Compressed timeline view with silence gap detection and synchronized dual-speaker display
 - **Multi-format export**: SRT, VTT, TXT, DOCX, JSON formats with speaker labels
-- **Audio playback controls**: Variable speed, mono/stereo switching, volume boost for low-quality recordings
+- **Audio playback controls**: Variable speed (0.5x-2.0x), mono/stereo switching, volume boost (100%-500%)
 
 ### Primary Use Case
 Processing stereo telephone recordings where:
 - **Left channel** = Speaker 1 (caller)
 - **Right channel** = Speaker 2 (recipient)
 
-The application is built with **Swift** and uses **WhisperKit** for on-device speech recognition with Metal GPU acceleration.
+The application is built with **Swift** using **MVVM architecture** and **WhisperKit** for on-device speech recognition with Metal GPU acceleration.
 
-## Architecture
+## Architecture Overview
 
-### Core Services
+### Code Metrics
+- **Total Swift Code**: ~10,720 lines organized into focused modules
+- **Average File Size**: ~200 lines
+- **Architecture Pattern**: MVVM with Dependency Injection
+- **Test Coverage Goal**: >60% for core logic
 
-#### 1. FileTranscriptionService (`Sources/Services/FileTranscriptionService.swift`)
-- Handles individual file transcription workflow
-- Audio format conversion and normalization
+### Directory Structure
+
+```
+Sources/
+├── DI/                        # Dependency Injection
+│   └── DependencyContainer.swift
+├── Protocols/                 # Protocol abstractions for testability
+│   ├── VocabularyManagerProtocol.swift
+│   ├── UserSettingsProtocol.swift
+│   └── ModelManagerProtocol.swift
+├── Errors/                    # Typed error handling
+│   ├── TranscriptionError.swift
+│   ├── WhisperError.swift
+│   └── AudioPlayerError.swift
+├── Services/                  # Business logic layer
+│   ├── WhisperService.swift
+│   ├── FileTranscriptionService.swift
+│   └── BatchTranscriptionService.swift
+├── UI/
+│   ├── ViewModels/           # MVVM ViewModels
+│   │   ├── FileTranscriptionViewModel.swift
+│   │   └── AudioPlayerState.swift
+│   ├── Views/                # Modular SwiftUI views
+│   │   ├── Transcription/   # Main transcription UI
+│   │   ├── Audio/           # Audio player controls
+│   │   └── Timeline/        # Timeline visualization
+│   ├── MainWindow.swift
+│   ├── AppDelegate.swift
+│   └── MenuBarController.swift
+└── Utils/
+    ├── Audio/                # Audio-specific utilities
+    │   └── AudioCache.swift  # Actor-based audio caching
+    ├── Timeline/             # Timeline compression logic
+    │   └── TimelineMapper.swift
+    ├── ModelManager.swift
+    ├── VocabularyManager.swift
+    ├── UserSettings.swift
+    ├── AudioPlayerManager.swift
+    ├── ExportManager.swift
+    └── VAD/                  # Voice Activity Detection
+
+Tests/
+├── Mocks/                    # Mock implementations for testing
+│   ├── MockVocabularyManager.swift
+│   ├── MockUserSettings.swift
+│   └── MockModelManager.swift
+├── Utils/
+│   ├── Timeline/TimelineMapperTests.swift
+│   └── VAD/SpectralVADTests.swift
+└── UI/ViewModels/FileTranscriptionViewModelTests.swift
+```
+
+## Core Architectural Patterns
+
+### 1. Dependency Injection (Service Locator Pattern)
+
+**DependencyContainer** (`Sources/DI/DependencyContainer.swift`):
+```swift
+public final class DependencyContainer {
+    // Shared singletons
+    public let modelManager: ModelManager
+    public let userSettings: UserSettings
+    private let vocabularyManager: VocabularyManagerProtocol
+    public let audioCache: AudioCache
+
+    // Service factories
+    public func makeWhisperService() -> WhisperService
+    public func makeFileTranscriptionService(whisperService:) -> FileTranscriptionService
+    public func makeBatchTranscriptionService(whisperService:) -> BatchTranscriptionService
+}
+```
+
+**Benefits**:
+- Single source of truth for dependencies
+- Easy to mock for testing
+- Clear dependency graph
+- Supports both concrete types and protocols
+
+**Usage**:
+```swift
+// TranscribeItApp.swift
+let dependencies = DependencyContainer(
+    modelManager: ModelManager.shared,
+    userSettings: UserSettings.shared,
+    vocabularyManager: VocabularyManager.shared,
+    audioCache: AudioCache()
+)
+```
+
+### 2. Protocol-Oriented Design
+
+Three core protocols enable testability:
+
+**VocabularyManagerProtocol** - Text corrections and custom vocabulary
+**UserSettingsProtocol** - Application settings and preferences
+**ModelManagerProtocol** - Whisper model management
+
+**Benefits**:
+- Enables dependency injection with mock implementations
+- Reduces coupling between components
+- Clear contracts between layers
+- Better IDE support and autocomplete
+
+### 3. MVVM (Model-View-ViewModel)
+
+**FileTranscriptionViewModel** (`Sources/UI/ViewModels/FileTranscriptionViewModel.swift`):
+```swift
+public class FileTranscriptionViewModel: ObservableObject {
+    @Published public var state: TranscriptionState = .idle
+    @Published public var progress: Double = 0.0
+    @Published public var currentTranscription: FileTranscription?
+
+    public let audioPlayer: AudioPlayerManager
+
+    public func startTranscription(file: URL)
+    public func updateProgress(file: String, progress: Double)
+    public func setTranscription(file: String, text: String, fileURL: URL)
+}
+```
+
+**AudioPlayerState** - Structured state management:
+```swift
+public struct AudioPlayerState: Equatable {
+    var playback: PlaybackState      // Play/pause, position, duration
+    var audio: AudioState            // Volume, boost
+    var settings: AudioSettings      // Speed, mono mode
+}
+```
+
+**Data Flow**:
+```
+User Action → View → ViewModel → Service → Model → ViewModel → View
+```
+
+### 4. Typed Error Handling
+
+**TranscriptionError** (`Sources/Errors/TranscriptionError.swift`):
+```swift
+public enum TranscriptionError: LocalizedError {
+    case fileNotFound(URL)
+    case audioLoadFailed(URL, underlying: Error)
+    case modelNotReady
+    case transcriptionTimeout(duration: TimeInterval)
+    case silenceDetected(URL)
+    case emptyTranscription(URL)
+    // ... and more
+
+    // Each provides:
+    public var errorDescription: String?        // User-friendly Russian message
+    public var recoverySuggestion: String?      // Actionable steps
+    public var failureReason: String?           // Technical details
+}
+```
+
+**WhisperError** - Model loading and transcription errors
+**AudioPlayerError** - Audio playback and format errors
+
+**Benefits**:
+- Type-safe error handling
+- Eliminates generic `NSError` usage
+- Localized error messages
+- Clear error propagation
+
+### 5. Actor-Based Concurrency
+
+**AudioCache** (`Sources/Utils/Audio/AudioCache.swift`):
+```swift
+public actor AudioCache {
+    struct CachedAudio {
+        let monoSamples: [Float]                    // 16kHz mono for transcription
+        let stereoChannels: (left: [Float], right: [Float])?
+        let sampleRate: Double
+        let duration: TimeInterval
+    }
+
+    func loadAudio(from url: URL) async throws -> CachedAudio
+    func isCached(_ url: URL) -> Bool
+    func clearCache()
+}
+```
+
+**Problem Solved**: Audio files were previously loaded 3 times (mono transcription, stereo separation, playback)
+**Solution**: Single load with both formats, LRU cache, ~66% reduction in file I/O
+
+## Core Services
+
+### 1. WhisperService (`Sources/Services/WhisperService.swift`)
+
+**Responsibilities**:
+- WhisperKit model loading and management
+- On-device transcription with Metal GPU
+- Performance metrics (Real-Time Factor tracking)
+- Audio normalization
+- Vocabulary corrections integration
+
+**Key Methods**:
+```swift
+public func loadModel() async throws
+public func transcribe(audioSamples: [Float], contextPrompt: String?) async throws -> String
+public func verifyMetalAcceleration()
+public func reloadModel(newModelSize: String) async throws
+```
+
+**Dependencies**: `VocabularyManagerProtocol`, `AudioNormalizer`
+
+### 2. FileTranscriptionService (`Sources/Services/FileTranscriptionService.swift`)
+
+**Responsibilities**:
+- Single file transcription workflow
+- Audio format conversion via AudioCache
+- Stereo channel separation with VAD
+- Context-aware segment transcription
 - Real-time progress tracking
-- **Key Methods**:
-  - `transcribeFile()` - Main transcription pipeline
-  - `prepareAudioFile()` - Format conversion and preprocessing
-  - `processSegments()` - Segment-by-segment transcription with timestamps
 
-#### 2. BatchTranscriptionService (`Sources/Services/BatchTranscriptionService.swift`)
-- Multi-file queue management (currently not used in main UI - single file mode)
+**Key Methods**:
+```swift
+public func transcribeFile(url: URL, updateProgress: @escaping (Double) -> Void) async throws -> DialogueTranscription
+```
+
+**Dependencies**: `WhisperService`, `UserSettingsProtocol`, `AudioCache`
+
+**Flow**:
+1. Load audio via AudioCache (checks cache first)
+2. Detect voice activity segments with VAD
+3. Transcribe each segment with context from previous segments
+4. Update ViewModel progress in real-time
+
+### 3. BatchTranscriptionService (`Sources/Services/BatchTranscriptionService.swift`)
+
+**Responsibilities**:
+- Multi-file queue management
 - Parallel processing with configurable concurrency
 - Batch progress tracking
-- **Key Methods**:
-  - `addToQueue()` - Adds files to transcription queue
-  - `processBatch()` - Manages concurrent transcription jobs
-  - `pauseProcessing()` / `resumeProcessing()` - Queue control
-- **Note**: Current application workflow processes one file at a time
 
-#### 3. WhisperService (`Sources/Services/WhisperService.swift`)
-- WhisperKit integration for on-device transcription
-- Metal GPU acceleration through MLX backend
-- Performance metrics (Real-Time Factor, transcription speed)
-- Support for multiple Whisper model sizes (tiny, base, small, medium, large)
-- **Key Methods**:
-  - `loadModel()` - Downloads and initializes WhisperKit model
-  - `transcribe()` - Transcribes audio with timestamps
-  - `verifyMetalAcceleration()` - Checks Metal GPU availability
+**Note**: Currently not used in main UI (single file mode)
 
-#### 4. ExportManager (`Sources/Utils/ExportManager.swift`)
-- Multi-format export system
-- Supported formats:
-  - **SRT** - SubRip subtitles with timestamps
-  - **VTT** - WebVTT subtitles
-  - **TXT** - Plain text with optional timestamps
-  - **DOCX** - Microsoft Word document
-  - **JSON** - Structured data with full metadata
-- **Key Methods**:
-  - `export(to:format:)` - Exports transcription to specified format
-  - `generateSRT()` / `generateVTT()` - Subtitle generation
-  - `generateDOCX()` - Word document creation
+## UI Components (MVVM)
 
-### UI Components
+### ViewModels
 
-#### 1. MainWindow (`Sources/UI/MainWindow.swift`)
-- Main transcription interface
-- File drag-and-drop support
-- Real-time transcription display with synchronized columns:
-  - Timestamp column (editable)
-  - Transcription text (editable)
-  - Waveform visualization
-- Audio player controls with waveform scrubbing
-- **Features**:
-  - Click timestamp to jump to audio position
-  - Click waveform to seek audio
-  - Edit timestamps and text inline
-  - Visual feedback for current playback position
+**FileTranscriptionViewModel**:
+- Manages transcription state (idle/processing/completed)
+- Progress tracking and updates
+- Current transcription data
+- Audio player integration
 
-#### 2. MenuBarController (`Sources/UI/MenuBarController.swift`)
-- Menu bar integration
-- Quick access to:
-  - Open files / batch import
-  - Recent files
-  - Export options
-  - Settings
-  - Model management
+**AudioPlayerState**:
+- Grouped state management (playback, audio, settings)
+- Replaces scattered `@Published` properties
+- Equatable for efficient SwiftUI updates
 
-### Audio Processing
+### Views (Modular Composition)
 
-#### 1. AudioPlayerManager (`Sources/Utils/AudioPlayerManager.swift`)
-- Advanced audio playback with waveform visualization
+**FileTranscriptionView** (`Sources/UI/Views/Transcription/FileTranscriptionView.swift`):
+- Main transcription container
+- File selection and drag-and-drop
+- Settings panel integration
+- Delegates business logic to ViewModel
+
+**TimelineSyncedDialogueView** (`Sources/UI/Views/Timeline/TimelineSyncedDialogueView.swift`):
+- Timeline visualization with compression
+- Integrates `CompressedTimelineMapper`
+- Adaptive scaling based on call duration
+- Header with total duration
+
+**TimelineDialogueView** (`Sources/UI/Views/Timeline/TimelineDialogueView.swift`):
+- Two-column speaker layout (left/right channels)
+- Synchronized turn display
+- Click-to-play functionality
+- Silence gap indicators
+
+**AudioPlayerView** (`Sources/UI/Views/Audio/AudioPlayerView.swift`):
+- Playback controls (play/pause, seek)
+- Speed control (0.5x - 2.0x)
+- Volume boost (100% - 500%)
+- Progress bar with click-to-seek
+- Mono/stereo toggle
+
+**View Composition Hierarchy**:
+```
+FileTranscriptionView
+├── HeaderView (file name, status, actions)
+├── SettingsPanel (model, VAD, transcription options)
+├── ProgressSection (model loading, transcription progress)
+└── ContentView
+    ├── TranscriptionContentView
+    │   ├── AudioPlayerView
+    │   └── TimelineSyncedDialogueView
+    │       └── TimelineDialogueView
+    └── EmptyStateView
+```
+
+## Key Utilities
+
+### 1. Timeline Compression
+
+**CompressedTimelineMapper** (`Sources/Utils/Timeline/TimelineMapper.swift`):
+```swift
+public struct CompressedTimelineMapper {
+    let minGapToCompress: TimeInterval = 0.5        // Min silence to compress
+    let compressedGapDisplay: TimeInterval = 0.15   // Visual display duration
+    let silenceGaps: [SilenceGap]
+
+    func visualPosition(for realTime: TimeInterval) -> TimeInterval
+    func totalVisualDuration(realDuration: TimeInterval) -> TimeInterval
+}
+```
+
+**Algorithm**:
+1. Find intervals when at least one speaker is talking
+2. Merge overlapping activity intervals
+3. Detect silence gaps where BOTH speakers are silent
+4. Compress long gaps (>0.5s) to 0.15s visually
+5. Map real time → visual time
+
+**Example**:
+```
+BEFORE: [Speaker 1: 0-2s] ----silence (3s)---- [Speaker 2: 5-7s]
+AFTER:  [Speaker 1: 0-2s] -0.15s- [Speaker 2: 2.15-4.15s]
+```
+
+### 2. Model Management
+
+**ModelManager** (`Sources/Utils/ModelManager.swift`):
+- Implements `ModelManagerProtocol`
+- Downloads models from Hugging Face
+- Manages multiple model sizes (tiny, base, small, medium, large-v2, large-v3)
+- Storage management and cleanup
+
+**Recommended Model**: `small` (~250 MB) - best balance of accuracy and performance
+
+### 3. Vocabulary Management
+
+**VocabularyManager** (`Sources/Utils/VocabularyManager.swift`):
+- Implements `VocabularyManagerProtocol`
+- Custom vocabulary corrections
+- Regex-based replacements
+- Domain-specific dictionaries
+
+**Default Corrections**: Technical terms (git, API, JSON), brand names (Apple, Microsoft), common Russian speech mistakes
+
+### 4. Audio Processing
+
+**AudioPlayerManager** (`Sources/Utils/AudioPlayerManager.swift`):
+- AVAudioEngine-based playback
+- Waveform generation and visualization
 - Frame-accurate seeking
-- Playback speed control
-- Waveform generation and caching
-- **Key Methods**:
-  - `loadAudio()` - Loads audio file and generates waveform
-  - `seek(to:)` - Frame-accurate position seeking
-  - `setPlaybackSpeed()` - Adjustable playback rate
+- Speed and volume control
+- Uses `AudioCache` for efficient loading
 
-#### 2. AudioFileNormalizer (`Sources/Utils/AudioFileNormalizer.swift`)
-- Audio preprocessing for optimal transcription
+**AudioFileNormalizer**:
 - Noise reduction
 - Volume normalization
 - Format conversion to WhisperKit-compatible format (16kHz mono Float32)
-- **Key Methods**:
-  - `normalize()` - Full audio preprocessing pipeline
-  - `convertFormat()` - Format conversion
-  - `applyNoiseReduction()` - Audio cleanup
 
-#### 3. VAD System (Voice Activity Detection)
-Multiple VAD implementations for different use cases:
-- **SpectralVAD** (`Sources/Utils/SpectralVAD.swift`) - Spectral energy analysis
-- **AdaptiveVAD** (`Sources/Utils/AdaptiveVAD.swift`) - Adaptive threshold adjustment
-- **VoiceActivityDetector** (`Sources/Utils/VoiceActivityDetector.swift`) - Base VAD interface
-- **SilenceDetector** (`Sources/Utils/SilenceDetector.swift`) - Silence trimming
+**VAD System**:
+- **SpectralVAD** - Spectral energy analysis
+- **AdaptiveVAD** - Adaptive threshold adjustment
+- **SilenceDetector** - Silence trimming
 
-Used for:
-- Dual-channel speaker separation
-- Automatic silence trimming
-- Segment boundary detection
+Used for dual-channel speaker separation and segment boundary detection.
 
-### Vocabulary & Model Management
+### 5. Export System
 
-#### 1. VocabularyManager (`Sources/Utils/VocabularyManager.swift`)
-- Custom vocabulary support for improved accuracy
-- Domain-specific dictionaries
-- Word replacement rules
-- **Key Methods**:
-  - `loadDictionary()` - Loads custom vocabulary
-  - `applyCorrections()` - Post-processing text corrections
+**ExportManager** (`Sources/Utils/ExportManager.swift`):
 
-#### 2. ModelManager (`Sources/Utils/ModelManager.swift`)
-- WhisperKit model download and management
-- Multiple model size support (tiny, base, small, medium, large)
-- Model switching without restart
-- Storage management
-- **Key Methods**:
-  - `downloadModel()` - Downloads model from Hugging Face
-  - `listAvailableModels()` - Shows installed and available models
-  - `deleteModel()` - Removes unused models
+**Supported Formats**:
+- **SRT** - SubRip subtitles with timestamps
+- **VTT** - WebVTT subtitles
+- **TXT** - Plain text with optional timestamps
+- **DOCX** - Microsoft Word document
+- **JSON** - Structured data with full metadata
 
-### System Logging
+## Testing Infrastructure
 
-**LogManager** (`Sources/Utils/LogManager.swift`)
-- Unified logging system using Apple's OSLog framework
-- Categories: `app`, `file`, `batch`, `transcription`, `export`, `audio`
-- Subsystem: `com.transcribeit.app`
-- **Viewing logs**:
+### Mock Implementations (`Tests/Mocks/`)
+
+**MockVocabularyManager**:
+```swift
+public final class MockVocabularyManager: VocabularyManagerProtocol {
+    // Call tracking
+    public var correctTranscriptionCallCount = 0
+    public var correctTranscriptionCalls: [String] = []
+
+    // Stubbed return values
+    public var stubbedCorrections: [String: String] = [:]
+
+    // Error simulation
+    public var shouldThrowOnLoad = false
+
+    public func reset()
+}
+```
+
+**MockUserSettings** - Configurable settings for testing
+**MockModelManager** - Model state simulation
+
+### Test Structure
+
+```
+Tests/
+├── Utils/Timeline/TimelineMapperTests.swift
+├── Utils/VAD/SpectralVADTests.swift
+├── UI/ViewModels/FileTranscriptionViewModelTests.swift
+└── Fixtures/audio/  # Test audio files
+```
+
+**Running Tests**:
 ```bash
-# Real-time log stream
-log stream --predicate 'subsystem == "com.transcribeit.app"'
+swift test                    # Run all tests
+swift test --parallel        # Parallel execution
+```
+
+## Configuration & Constants
+
+All magic numbers extracted to dedicated constant files:
+- `TimelineConstants.swift` - Timeline compression, scaling, synchronization
+- `TurnCardConstants.swift` - Card styling, padding, colors
+- `SilenceIndicatorConstants.swift` - Silence gap visualization
+- `TranscriptionViewConstants.swift` - UI layout constants
+- `AudioNormalizerConstants.swift` - Audio processing parameters
+
+**Example**:
+```swift
+enum TimelineConstants {
+    enum Compression {
+        static let minSilenceGapToCompress: TimeInterval = 0.5
+        static let compressedGapDisplayDuration: TimeInterval = 0.15
+    }
+    enum Scaling {
+        static let maxTimelineHeight: CGFloat = 600
+        static let defaultPixelsPerSecond: CGFloat = 50
+    }
+}
+```
+
+## Building & Running
+
+### Development Build
+```bash
+swift build                  # Debug build
+.build/debug/TranscribeIt    # Run executable
+```
+
+### Release Build
+```bash
+swift build -c release
+```
+
+### Build .app Bundle
+```bash
+./build_app.sh              # Creates signed .app with entitlements
+```
+
+### Testing
+```bash
+swift test                  # Run all tests
+swift test --filter Timeline  # Run specific tests
+```
+
+## System Logging
+
+**LogManager** (`Sources/Utils/LogManager.swift`):
+- Uses Apple's OSLog framework
+- Subsystem: `com.transcribeit.app`
+- Categories: `app`, `file`, `batch`, `transcription`, `export`, `audio`
+
+**Viewing Logs**:
+```bash
+# Real-time monitoring
+log stream --predicate 'subsystem == "com.transcribeit.app"' --level debug
 
 # Filter by category
 log stream --predicate 'subsystem == "com.transcribeit.app" && category == "transcription"'
 
 # Show last hour
 log show --predicate 'subsystem == "com.transcribeit.app"' --last 1h
+
+# Only errors
+log stream --predicate 'subsystem == "com.transcribeit.app" && eventType >= logEventType.error'
 ```
 
-### Permissions
-
-**Required**:
-- ✅ Microphone access (AVFoundation) - for audio file processing (required by WhisperKit)
-
-**NOT Required**:
-- ❌ Accessibility - not needed for file transcription
-- ❌ Input Monitoring - not needed for file transcription
-
-**PermissionManager** (`Sources/Utils/PermissionManager.swift`)
-- Simplified permission checker (microphone only)
-- Async permission request with user feedback
-
-### User Settings
-
-**UserSettings** (`Sources/Utils/UserSettings.swift`)
-- Persistent application configuration using UserDefaults
-- Settings:
-  - Whisper model selection (tiny/base/small/medium/large)
-  - Dual-channel mode (speaker separation)
-  - Auto-export on completion
-  - Default export format
-  - Audio normalization preferences
-  - VAD sensitivity
-
-## Development Tasks
-
-### Building the Application
-
-```bash
-# Build the application
-swift build
-
-# Run the main executable
-.build/debug/TranscribeIt
-
-# Build release version
-swift build -c release
-```
-
-### Building .app Bundle
-
-```bash
-# Build signed .app with entitlements
-./build_app.sh
-```
-
-### Testing Audio Processing
-
-Test files should be placed in a `test_audio/` directory (gitignored):
-- Supported formats: MP3, M4A, WAV, AIFF, AAC, FLAC, MP4, MOV
-- Test with various sample rates and channel configurations
-- Dual-channel files for speaker separation testing
-
-## Common Issues & Debugging
+## Common Issues & Solutions
 
 ### Model Loading Fails
 
-**Problem**: WhisperKit model download fails
+**Symptoms**: `WhisperError.modelLoadFailed`
 
 **Solutions**:
-1. Check internet connection (models downloaded from Hugging Face)
-2. Verify Metal GPU availability:
-   ```bash
-   log stream --predicate 'subsystem == "com.transcribeit.app" && category == "transcription"'
-   ```
-3. Clear WhisperKit cache: `~/Library/Caches/whisperkit_models/`
+1. Check internet connection (models from Hugging Face)
+2. Verify Metal GPU: `log stream --predicate 'category == "transcription"'`
+3. Clear cache: `~/Library/Caches/whisperkit_models/`
 4. Try smaller model first (tiny or base)
 
 ### Transcription Quality Issues
 
-**Problem**: Poor transcription accuracy
+**Solutions**:
+1. Use larger model (small or medium recommended)
+2. Enable audio normalization in settings
+3. Add custom vocabulary for domain terms
+4. Check audio quality (16kHz+ sample rate)
+5. For stereo, ensure distinct speakers in left/right channels
+
+### Audio Cache Issues
+
+**Symptoms**: High memory usage
+
+**Check cache statistics**:
+```swift
+let stats = await audioCache.getStatistics()
+print("Cache: \(stats.hitRate)% hit rate, \(stats.currentSize) bytes")
+```
 
 **Solutions**:
-1. Use larger Whisper model (medium or large)
-2. Enable audio normalization in settings
-3. Check audio quality (16kHz+ sample rate recommended)
-4. Add custom vocabulary for domain-specific terms
-5. For dual-channel, ensure left/right channels have distinct speakers
+1. Cache auto-evicts after 5 minutes
+2. Max 3 files cached (500 MB limit)
+3. Manually clear: `await audioCache.clearCache()`
 
 ### Export Fails
 
-**Problem**: Export to specific format fails
+**Symptoms**: `TranscriptionError.exportFailed`
 
 **Solutions**:
 1. Check write permissions for export directory
-2. For DOCX export, verify sufficient disk space
-3. Check logs for specific error:
-   ```bash
-   log stream --predicate 'subsystem == "com.transcribeit.app" && category == "export"'
-   ```
+2. Verify disk space (especially for DOCX)
+3. Check logs: `log stream --predicate 'category == "export"'`
 
-### Audio Player Issues
+### Timeline Visualization Issues
 
-**Problem**: Waveform not displaying or playback stuttering
+**Symptoms**: Compressed timeline looks incorrect
 
-**Solutions**:
-1. Check audio file format compatibility
-2. Verify audio file isn't corrupted
-3. Check logs for audio processing errors:
-   ```bash
-   log stream --predicate 'subsystem == "com.transcribeit.app" && category == "audio"'
-   ```
-4. Try re-encoding audio file to standard format
-
-### Viewing Application Logs
-
-**Real-time monitoring**:
-```bash
-# All logs
-log stream --predicate 'subsystem == "com.transcribeit.app"' --level debug
-
-# Only errors
-log stream --predicate 'subsystem == "com.transcribeit.app" && eventType >= logEventType.error'
-
-# Specific category (file processing)
-log stream --predicate 'subsystem == "com.transcribeit.app" && category == "file"'
+**Debug**:
+```swift
+let mapper = CompressedTimelineMapper(turns: dialogue.turns)
+print("Silence gaps detected: \(mapper.silenceGaps.count)")
+print("Visual duration: \(mapper.totalVisualDuration(realDuration: duration))")
 ```
 
-**Historical logs**:
-```bash
-# Last 30 minutes
-log show --predicate 'subsystem == "com.transcribeit.app"' --last 30m
+## Design Principles
 
-# Export to file
-log show --predicate 'subsystem == "com.transcribeit.app"' --last 1h > logs.txt
-```
+1. **MVVM Architecture** - Clear separation of business logic and UI
+2. **Protocol-Oriented Design** - Testability with protocol abstractions
+3. **Dependency Injection** - Service Locator pattern for flexible dependencies
+4. **Typed Errors** - Strongly-typed, localized error handling
+5. **Actor-Based Concurrency** - Thread-safe audio caching
+6. **Composition over Inheritance** - Modular, reusable views
+7. **Single Responsibility** - Each file/class has one clear purpose
+8. **Constants Extraction** - No magic numbers in code
+9. **On-Device Processing** - Privacy-focused, no cloud dependencies
+10. **Performance Monitoring** - RTF tracking, cache statistics
 
-## Key Design Principles
+## Key Code References
 
-1. **File-based Processing**: Optimized for batch file transcription, not live recording
-2. **Professional Features**: Multi-format export, dual-channel support, waveform editing
-3. **On-device Processing**: WhisperKit runs entirely on device with Metal GPU acceleration
-4. **Minimal Permissions**: Only microphone access required (WhisperKit requirement)
-5. **Performance Monitoring**: Real-Time Factor (RTF) tracking for transcription speed
-6. **Menu Bar Integration**: Lightweight menu bar app with drag-and-drop support
-7. **Editable Output**: All timestamps and transcriptions are editable before export
+- Dependency injection: `Sources/DI/DependencyContainer.swift`
+- File transcription: `Sources/Services/FileTranscriptionService.swift`
+- MVVM ViewModel: `Sources/UI/ViewModels/FileTranscriptionViewModel.swift`
+- Timeline compression: `Sources/Utils/Timeline/TimelineMapper.swift`
+- Audio caching: `Sources/Utils/Audio/AudioCache.swift`
+- Typed errors: `Sources/Errors/TranscriptionError.swift`
+- Protocol abstractions: `Sources/Protocols/VocabularyManagerProtocol.swift`
+- Mock implementations: `Tests/Mocks/MockVocabularyManager.swift`
+- Audio player: `Sources/Utils/AudioPlayerManager.swift`
+- Model management: `Sources/Utils/ModelManager.swift`
 
-## Code References
+## Future Enhancements
 
-- File transcription: `Sources/Services/FileTranscriptionService.swift:45`
-- Batch processing: `Sources/Services/BatchTranscriptionService.swift:67`
-- Export formats: `Sources/Utils/ExportManager.swift:32`
-- Waveform visualization: `Sources/Utils/AudioPlayerManager.swift:89`
-- Speaker separation: `Sources/Services/FileTranscriptionService.swift:123`
-- Model management: `Sources/Utils/ModelManager.swift:56`
+1. **Complete Test Coverage** - Reach >60% for core logic
+2. **Integration Tests** - End-to-end transcription workflows
+3. **Performance Benchmarks** - AudioCache and VAD performance tests
+4. **SwiftUI Previews** - Preview providers for all views
+5. **Actor-Based Services** - Convert services to actors for better concurrency
+6. **Localization** - Support multiple languages beyond Russian

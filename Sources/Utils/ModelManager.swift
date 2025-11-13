@@ -3,7 +3,7 @@ import WhisperKit
 
 /// Менеджер для управления Whisper моделями
 /// Поддерживает загрузку, удаление и проверку доступных моделей
-public class ModelManager: ObservableObject {
+public class ModelManager: ObservableObject, ModelManagerProtocol {
     public static let shared = ModelManager()
 
     @Published public var availableModels: [WhisperModel] = []
@@ -120,7 +120,7 @@ public class ModelManager: ObservableObject {
             // Имитируем прогресс (WhisperKit не предоставляет реальный прогресс)
             let progressTask = Task {
                 for i in 1...10 {
-                    try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 секунды
+                    try? await Task.sleep(nanoseconds: ServiceConstants.WaitIntervals.halfSecond)
                     await MainActor.run {
                         self.downloadProgress = Double(i) * 0.08 // 0.08, 0.16, 0.24...0.80
                     }

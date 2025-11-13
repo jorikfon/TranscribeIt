@@ -2,12 +2,66 @@ import Foundation
 import WhisperKit
 import Metal
 
-/// Сервис для транскрипции аудио через WhisperKit
-/// Поддерживает модели: tiny, base, small
+/// Сервис для транскрипции аудио через WhisperKit с поддержкой Metal GPU и Neural Engine
+///
+/// Предоставляет on-device транскрипцию аудио с использованием оптимизированных моделей Whisper
+/// для Apple Silicon. Поддерживает автоматическую нормализацию аудио, контекстные промпты
+/// и vocabulary corrections для улучшения качества распознавания.
+///
+/// ## Поддерживаемые модели
+/// - `tiny` - Самая быстрая, базовая точность (~39M параметров)
+/// - `base` - Баланс скорости и точности (~74M параметров)
+/// - `small` - Хорошая точность (~244M параметров) - рекомендуется
+/// - `medium` - Высокая точность (~769M параметров)
+/// - `large` - Максимальная точность (~1550M параметров)
+///
+/// ## Оптимизация производительности
+/// - **Metal GPU**: Используется для mel-спектрограмм
+/// - **Neural Engine**: Используется для encoder/decoder/prefill
+/// - **Unified Memory**: Эффективное использование памяти Apple Silicon
+/// - **Prewarm**: Предварительный прогрев модели для быстрого первого запуска
+///
+/// ## Возможности
+/// - Автоматическая нормализация тихого аудио
+/// - Контекстные промпты для улучшения связности текста
+/// - Vocabulary corrections через VocabularyManager
+/// - Performance metrics (RTF - Real-Time Factor)
+/// - Поддержка различных языков
+/// - Кэширование моделей для быстрой загрузки
+///
+/// ## Example
+/// ```swift
+/// let whisperService = WhisperService(
+///     modelSize: "small",
+///     vocabularyManager: VocabularyManager.shared
+/// )
+///
+/// // Загрузка модели
+/// try await whisperService.loadModel()
+///
+/// // Транскрипция аудио
+/// let audioSamples: [Float] = // ... 16kHz mono audio
+/// let text = try await whisperService.transcribe(
+///     audioSamples: audioSamples,
+///     contextPrompt: "Previous dialogue context"
+/// )
+/// print("Transcribed: \(text)")
+/// print("RTF: \(whisperService.averageRTF)")
+/// ```
+///
+/// ## Performance
+/// Типичный Real-Time Factor (RTF) на Apple Silicon:
+/// - M1/M2/M3 + tiny: 0.05-0.1x (20x быстрее реального времени)
+/// - M1/M2/M3 + small: 0.15-0.3x (3-7x быстрее реального времени)
+/// - M1/M2/M3 + medium: 0.4-0.8x (1.2-2.5x быстрее реального времени)
+///
+/// ## Thread Safety
+/// WhisperService не является thread-safe. Используйте один экземпляр на последовательную очередь
+/// или защищайте доступ через actor/locks.
 public class WhisperService {
     private var whisperKit: WhisperKit?
     private var modelSize: String  // Изменено с let на var для возможности смены модели
-    private let vocabularyManager = VocabularyManager.shared
+    private let vocabularyManager: VocabularyManagerProtocol
     private let audioNormalizer = AudioNormalizer(parameters: .default)
 
     // Prompt для специальных терминов и контекста
@@ -22,18 +76,41 @@ public class WhisperService {
     private var transcriptionCount: Int = 0
     private var totalRTF: Double = 0
 
+    // GPU/Neural Engine status
+    public private(set) var isMetalAvailable: Bool = false
+    public private(set) var isNeuralEngineAvailable: Bool = false
+    public private(set) var gpuName: String = "Unknown"
+
     /// Размер текущей модели
     public var currentModelSize: String {
         return modelSize
     }
 
-    public init(modelSize: String = "small") {
+    public init(
+        modelSize: String,
+        vocabularyManager: VocabularyManagerProtocol
+    ) {
         self.modelSize = modelSize
+        self.vocabularyManager = vocabularyManager
         LogManager.transcription.info("Инициализация WhisperService с моделью \(modelSize)")
     }
 
     /// Перезагружает WhisperKit с новой моделью
+    ///
+    /// Освобождает текущую модель из памяти и загружает новую. Полезно для переключения
+    /// между моделями во время работы приложения (например, с small на medium для лучшей точности).
+    ///
     /// - Parameter newModelSize: Размер новой модели (tiny, base, small, medium, large)
+    /// - Throws: `WhisperError.modelLoadFailed` если загрузка новой модели не удалась
+    ///
+    /// ## Example
+    /// ```swift
+    /// // Переключение на более точную модель
+    /// try await whisperService.reloadModel(newModelSize: "medium")
+    /// ```
+    ///
+    /// - Note: Если модель уже загружена, метод ничего не делает
+    /// - Note: После смены модели сбрасывается статистика производительности
     public func reloadModel(newModelSize: String) async throws {
         guard newModelSize != modelSize else {
             LogManager.transcription.info("Модель \(newModelSize) уже загружена, перезагрузка не требуется")
@@ -57,7 +134,29 @@ public class WhisperService {
         LogManager.transcription.success("Модель успешно сменена на \(newModelSize)")
     }
 
-    /// Загрузка модели Whisper с максимальной оптимизацией для Apple Silicon
+    /// Загружает модель Whisper с максимальной оптимизацией для Apple Silicon
+    ///
+    /// Инициализирует WhisperKit с указанной моделью, используя Neural Engine и Metal GPU
+    /// для максимальной производительности. Модели загружаются из Hugging Face и кэшируются
+    /// локально в `~/Library/Application Support/TranscribeIt/Models/`.
+    ///
+    /// - Throws: `WhisperError.modelLoadFailed` если загрузка модели не удалась
+    ///
+    /// ## Compute Options
+    /// - Mel спектрограмма: CPU + GPU
+    /// - Audio encoder: CPU + Neural Engine
+    /// - Text decoder: CPU + Neural Engine
+    /// - Prefill: CPU + Neural Engine
+    ///
+    /// ## Example
+    /// ```swift
+    /// let service = WhisperService(modelSize: "small", vocabularyManager: VocabularyManager.shared)
+    /// try await service.loadModel()
+    /// // Модель готова к использованию
+    /// ```
+    ///
+    /// - Note: Первая загрузка модели занимает время (скачивание с Hugging Face)
+    /// - Note: Повторные запуски используют кэшированную модель и загружаются быстрее
     public func loadModel() async throws {
         LogManager.transcription.begin("Загрузка модели", details: modelSize)
 
@@ -99,7 +198,7 @@ public class WhisperService {
             verifyMetalAcceleration()
         } catch {
             LogManager.transcription.failure("Загрузка модели", error: error)
-            throw WhisperError.modelLoadFailed(error)
+            throw WhisperError.modelLoadFailed(underlying: error, modelSize: modelSize)
         }
     }
 
@@ -107,22 +206,26 @@ public class WhisperService {
     private func verifyMetalAcceleration() {
         guard let device = MTLCreateSystemDefaultDevice() else {
             LogManager.transcription.error("Metal GPU не доступен")
+            isMetalAvailable = false
+            isNeuralEngineAvailable = false
+            gpuName = "None"
             return
         }
 
+        // Сохраняем статус GPU
+        isMetalAvailable = true
+        gpuName = device.name
+        isNeuralEngineAvailable = device.supportsFamily(.apple7) // M1 и новее
+
         let memoryGB = device.recommendedMaxWorkingSetSize / 1024 / 1024 / 1024
         let isAppleSilicon = device.supportsFamily(.apple7)
-
-        // Проверка поддержки Neural Engine (ANE)
-        let supportsANE = device.supportsFamily(.apple7) // M1 и новее
-
         let maxThreads = device.maxThreadsPerThreadgroup
 
         LogManager.transcription.info("🚀 Apple Silicon Acceleration")
         LogManager.transcription.info("  GPU: \(device.name)")
         LogManager.transcription.info("  Unified Memory: \(memoryGB)GB")
         LogManager.transcription.info("  Metal: \(isAppleSilicon ? "✅" : "❌") Apple Silicon")
-        LogManager.transcription.info("  Neural Engine: \(supportsANE ? "✅ Enabled (All components)" : "❌")")
+        LogManager.transcription.info("  Neural Engine: \(isNeuralEngineAvailable ? "✅ Enabled (All components)" : "❌")")
         LogManager.transcription.info("  Compute Units: Mel=GPU, Encoder/Decoder/Prefill=ANE")
         LogManager.transcription.debug("  Max threads: \(maxThreads.width)×\(maxThreads.height)×\(maxThreads.depth)")
 
@@ -133,9 +236,26 @@ public class WhisperService {
         }
     }
 
-    /// Быстрая транскрипция чанка для real-time отображения (упрощенные настройки)
-    /// - Parameter audioSamples: Массив Float32 аудио сэмплов (16kHz mono)
-    /// - Returns: Распознанный текст
+    /// Быстрая транскрипция аудио чанка для real-time отображения
+    ///
+    /// Использует упрощенные настройки для максимальной скорости: greedy decoding (topK=1),
+    /// без beam search, детерминированный вывод. Предназначен для быстрой предварительной
+    /// транскрипции во время записи или потоковой обработки.
+    ///
+    /// - Parameter audioSamples: Массив Float32 аудио сэмплов в формате 16kHz mono
+    /// - Returns: Распознанный текст с применением vocabulary corrections
+    /// - Throws: `WhisperError.modelNotLoaded` если модель не загружена
+    ///
+    /// ## Example
+    /// ```swift
+    /// // Транскрипция короткого чанка аудио
+    /// let chunk: [Float] = // ... 3 секунды аудио (48000 samples @ 16kHz)
+    /// let quickResult = try await whisperService.transcribeChunk(audioSamples: chunk)
+    /// print("Quick transcription: \(quickResult)")
+    /// ```
+    ///
+    /// - Note: Для финальной высококачественной транскрипции используйте `transcribe(audioSamples:contextPrompt:)`
+    /// - Note: Автоматически применяется нормализация для тихого аудио
     public func transcribeChunk(audioSamples: [Float]) async throws -> String {
         guard let whisperKit = whisperKit else {
             throw WhisperError.modelNotLoaded
@@ -184,11 +304,37 @@ public class WhisperService {
         return correctedText
     }
 
-    /// Транскрипция аудио данных с контекстным промптом
+    /// Транскрибирует аудио данные с опциональным контекстным промптом
+    ///
+    /// Выполняет высококачественную транскрипцию с использованием beam search и quality enhancement.
+    /// Контекстный промпт используется для улучшения связности текста между соседними сегментами
+    /// диалога (например, передавая текст предыдущих реплик для лучшего распознавания имен и терминов).
+    ///
     /// - Parameters:
-    ///   - audioSamples: Массив Float32 аудио сэмплов (16kHz mono)
-    ///   - contextPrompt: Опциональный промпт с предыдущим контекстом для улучшения связности
-    /// - Returns: Распознанный текст
+    ///   - audioSamples: Массив Float32 аудио сэмплов в формате 16kHz mono
+    ///   - contextPrompt: Опциональный промпт с предыдущим контекстом (макс 224 токена)
+    /// - Returns: Распознанный текст с применением vocabulary corrections
+    /// - Throws: `WhisperError.modelNotLoaded` если модель не загружена
+    ///
+    /// ## Example
+    /// ```swift
+    /// // Транскрипция с контекстом предыдущего диалога
+    /// let previousContext = "Иван: Здравствуйте. Мария: Добрый день, Иван."
+    /// let audioSamples: [Float] = // ... аудио следующей реплики
+    /// let text = try await whisperService.transcribe(
+    ///     audioSamples: audioSamples,
+    ///     contextPrompt: previousContext
+    /// )
+    /// ```
+    ///
+    /// ## Performance
+    /// - Включает quality enhancement для лучшей точности
+    /// - Использует beam search (топ-5 кандидатов)
+    /// - Применяет префильный кэш для ускорения повторных вызовов
+    /// - Автоматическая нормализация тихого аудио
+    ///
+    /// - Note: Контекстный промпт временно заменяет `promptText` на время транскрипции
+    /// - Note: После транскрипции обновляются метрики производительности (RTF)
     public func transcribe(audioSamples: [Float], contextPrompt: String? = nil) async throws -> String {
         // Временно сохраняем текущий prompt
         let originalPrompt = self.promptText
@@ -337,8 +483,9 @@ public class WhisperService {
 
             return correctedText
         } catch {
+            let elapsedTime = Date().timeIntervalSince(startTime)
             LogManager.transcription.failure("Транскрипция", error: error)
-            throw WhisperError.transcriptionFailed(error)
+            throw WhisperError.transcriptionFailed(underlying: error, duration: elapsedTime)
         }
     }
 
@@ -371,26 +518,7 @@ public class WhisperService {
     }
 }
 
-/// Ошибки WhisperService
-enum WhisperError: Error {
-    case modelNotLoaded
-    case modelLoadFailed(Error)
-    case transcriptionFailed(Error)
-    case invalidAudioFormat
-
-    var localizedDescription: String {
-        switch self {
-        case .modelNotLoaded:
-            return "Модель Whisper не загружена"
-        case .modelLoadFailed(let error):
-            return "Не удалось загрузить модель: \(error.localizedDescription)"
-        case .transcriptionFailed(let error):
-            return "Ошибка транскрипции: \(error.localizedDescription)"
-        case .invalidAudioFormat:
-            return "Неверный формат аудио данных"
-        }
-    }
-}
+// WhisperError определен в Sources/Errors/WhisperError.swift
 
 /// Статистика производительности транскрипции
 public struct PerformanceStats {

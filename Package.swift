@@ -31,6 +31,22 @@ let package = Package(
             ],
             path: "Sources/App",
             sources: ["TranscribeItApp.swift", "AppDelegate.swift"]
+        ),
+
+        // Unit-тесты
+        .testTarget(
+            name: "TranscribeItCoreTests",
+            dependencies: [
+                "TranscribeItCore",
+                .product(name: "WhisperKit", package: "WhisperKit")
+            ],
+            path: "Tests",
+            exclude: [
+                "README.md"
+            ],
+            resources: [
+                .copy("Fixtures/audio")
+            ]
         )
     ]
 )
