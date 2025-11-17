@@ -345,9 +345,13 @@ Sources/App/
        │
        ▼
 ┌──────────────────────────────────────────┐
-│  WhisperService Transcription            │
-│  - Process segments in order             │
-│  - Use context from previous turns       │
+│  Context Building & Transcription        │
+│  - Build intelligent context prompt:     │
+│    * Base context (domain/terminology)   │
+│    * Named entities (if enabled)         │
+│    * Vocabulary terms (up to 15)         │
+│    * Recent dialogue (3-10 turns)        │
+│  - WhisperService.transcribe()           │
 │  - Apply vocabulary corrections          │
 │  - Track progress (callbacks)            │
 └──────┬───────────────────────────────────┘
@@ -481,7 +485,12 @@ Thread-safe actor-based caching to prevent redundant file loading:
 │    ↓                                                            │
 │    For each segment chronologically:                           │
 │      ├─ Check for silence → skip                               │
-│      ├─ Build context: last 5 turns (max 300 chars)           │
+│      ├─ Build context prompt:                                  │
+│      │    * Base context (if configured)                       │
+│      │    * Named entities from recent 20 turns (if enabled)   │
+│      │    * Vocabulary terms up to 15 (if enabled)             │
+│      │    * Last 3-10 dialogue turns (configurable)            │
+│      │    * Smart truncation at word boundaries (300-700 chars)│
 │      ├─ WhisperService.transcribe(audio, context)             │
 │      ├─ VocabularyManager corrections                          │
 │      ├─ Create Turn(speaker, text, time)                       │

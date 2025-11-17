@@ -34,6 +34,11 @@ public class UserSettings: ObservableObject, UserSettingsProtocol {
         static let selectedDictionaryIds = "com.transcribeit.selectedDictionaryIds"
         static let customPrefillPrompt = "com.transcribeit.customPrefillPrompt"
         static let baseContextPrompt = "com.transcribeit.baseContextPrompt"
+        static let maxContextLength = "com.transcribeit.maxContextLength"
+        static let maxRecentTurns = "com.transcribeit.maxRecentTurns"
+        static let enableEntityExtraction = "com.transcribeit.enableEntityExtraction"
+        static let enableVocabularyIntegration = "com.transcribeit.enableVocabularyIntegration"
+        static let postVADMergeThreshold = "com.transcribeit.postVADMergeThreshold"
     }
 
     // Встроенный промпт для программирования (русский + английский)
@@ -67,6 +72,25 @@ Metal, GPU, CPU, memory, cache, buffer, thread, async, sync, framework, library.
         self.customPrefillPrompt = defaults.string(forKey: Keys.customPrefillPrompt) ?? ""
         self.baseContextPrompt = defaults.string(forKey: Keys.baseContextPrompt) ?? ""
         self.transcriptionLanguage = defaults.string(forKey: Keys.transcriptionLanguage) ?? "ru"
+
+        // Инициализируем настройки оптимизации контекста
+        let storedMaxContextLength = defaults.integer(forKey: Keys.maxContextLength)
+        self.maxContextLength = storedMaxContextLength > 0 ? storedMaxContextLength : 600  // Default 600
+
+        let storedMaxRecentTurns = defaults.integer(forKey: Keys.maxRecentTurns)
+        self.maxRecentTurns = storedMaxRecentTurns > 0 ? storedMaxRecentTurns : 5  // Default 5
+
+        self.enableEntityExtraction = defaults.bool(forKey: Keys.enableEntityExtraction)  // Default false
+
+        // Для enableVocabularyIntegration нужно проверить, установлено ли значение
+        if defaults.object(forKey: Keys.enableVocabularyIntegration) != nil {
+            self.enableVocabularyIntegration = defaults.bool(forKey: Keys.enableVocabularyIntegration)
+        } else {
+            self.enableVocabularyIntegration = true  // Default true
+        }
+
+        let storedThreshold = defaults.double(forKey: Keys.postVADMergeThreshold)
+        self.postVADMergeThreshold = storedThreshold > 0 ? storedThreshold : 1.5  // Default 1.5
 
         LogManager.app.info("UserSettings: Инициализация")
         loadVocabularies()
@@ -352,6 +376,46 @@ Metal, GPU, CPU, memory, cache, buffer, thread, async, sync, framework, library.
         didSet {
             defaults.set(baseContextPrompt, forKey: Keys.baseContextPrompt)
             LogManager.app.info("Базовый контекстный промпт обновлен (\(baseContextPrompt.count) символов)")
+        }
+    }
+
+    /// Максимальная длина контекстного промпта в символах (300-700)
+    @Published public var maxContextLength: Int {
+        didSet {
+            defaults.set(maxContextLength, forKey: Keys.maxContextLength)
+            LogManager.app.info("Максимальная длина контекста: \(maxContextLength) символов")
+        }
+    }
+
+    /// Максимальное количество последних реплик для контекста (3-10)
+    @Published public var maxRecentTurns: Int {
+        didSet {
+            defaults.set(maxRecentTurns, forKey: Keys.maxRecentTurns)
+            LogManager.app.info("Максимум последних реплик: \(maxRecentTurns)")
+        }
+    }
+
+    /// Включить извлечение именованных сущностей из истории диалога
+    @Published public var enableEntityExtraction: Bool {
+        didSet {
+            defaults.set(enableEntityExtraction, forKey: Keys.enableEntityExtraction)
+            LogManager.app.info("Извлечение сущностей: \(enableEntityExtraction ? "вкл" : "выкл")")
+        }
+    }
+
+    /// Включить интеграцию терминов из словаря в контекст
+    @Published public var enableVocabularyIntegration: Bool {
+        didSet {
+            defaults.set(enableVocabularyIntegration, forKey: Keys.enableVocabularyIntegration)
+            LogManager.app.info("Интеграция словаря в контекст: \(enableVocabularyIntegration ? "вкл" : "выкл")")
+        }
+    }
+
+    /// Порог слияния соседних сегментов после VAD в секундах (0.5-3.0)
+    @Published public var postVADMergeThreshold: TimeInterval {
+        didSet {
+            defaults.set(postVADMergeThreshold, forKey: Keys.postVADMergeThreshold)
+            LogManager.app.info("Порог слияния VAD: \(String(format: "%.1f", postVADMergeThreshold)) сек")
         }
     }
 

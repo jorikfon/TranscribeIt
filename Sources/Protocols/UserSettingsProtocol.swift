@@ -94,6 +94,23 @@ public protocol UserSettingsProtocol {
     /// Получить полный префилл промпт из словарей и кастомного текста
     func buildFullPrefillPrompt() -> String
 
+    // MARK: - Context Optimization
+
+    /// Максимальная длина контекстного промпта в символах (300-700)
+    var maxContextLength: Int { get set }
+
+    /// Максимальное количество последних реплик для контекста (3-10)
+    var maxRecentTurns: Int { get set }
+
+    /// Включить извлечение именованных сущностей из истории диалога
+    var enableEntityExtraction: Bool { get set }
+
+    /// Включить интеграцию терминов из словаря в контекст
+    var enableVocabularyIntegration: Bool { get set }
+
+    /// Порог слияния соседних сегментов после VAD в секундах (0.5-3.0)
+    var postVADMergeThreshold: TimeInterval { get set }
+
     // MARK: - File Transcription
 
     /// Режим транскрипции файлов

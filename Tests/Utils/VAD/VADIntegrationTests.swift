@@ -318,4 +318,178 @@ final class VADIntegrationTests: XCTestCase {
 
         // Then - no assertions, just performance measurement
     }
+
+    // MARK: - Post-VAD Segment Merging Tests
+
+    /// Тест: Слияние соседних сегментов одного спикера с коротким промежутком
+    func testMergeAdjacentSegmentsSameSpeaker() {
+        // Given: Два сегмента одного спикера с промежутком 1.0с (< threshold 1.5с)
+        let segment1 = MockChannelSegment(
+            startTime: 0.0, endTime: 2.0, channel: 0, speaker: .left,
+            audioSamples: [Float](repeating: 0.5, count: 32000)
+        )
+        let segment2 = MockChannelSegment(
+            startTime: 3.0, endTime: 5.0, channel: 0, speaker: .left,
+            audioSamples: [Float](repeating: 0.5, count: 32000)
+        )
+        let segments = [segment1, segment2]
+        let threshold: TimeInterval = 1.5
+
+        // When: Применяем слияние
+        let merged = mergeAdjacentSegments(segments, maxGap: threshold)
+
+        // Then: Сегменты должны быть объединены
+        XCTAssertEqual(merged.count, 1, "Два соседних сегмента одного спикера с промежутком < 1.5с должны объединиться")
+        XCTAssertEqual(merged[0].segment.startTime, 0.0, "Начало должно быть от первого сегмента")
+        XCTAssertEqual(merged[0].segment.endTime, 5.0, "Конец должен быть от второго сегмента")
+    }
+
+    /// Тест: Не сливать сегменты разных спикеров
+    func testDoNotMergeDifferentSpeakers() {
+        // Given: Два сегмента разных спикеров с промежутком 1.0с
+        let segment1 = MockChannelSegment(
+            startTime: 0.0, endTime: 2.0, channel: 0, speaker: .left,
+            audioSamples: [Float](repeating: 0.5, count: 32000)
+        )
+        let segment2 = MockChannelSegment(
+            startTime: 3.0, endTime: 5.0, channel: 1, speaker: .right,
+            audioSamples: [Float](repeating: 0.5, count: 32000)
+        )
+        let segments = [segment1, segment2]
+        let threshold: TimeInterval = 1.5
+
+        // When: Применяем слияние
+        let merged = mergeAdjacentSegments(segments, maxGap: threshold)
+
+        // Then: Сегменты НЕ должны быть объединены (разные спикеры)
+        XCTAssertEqual(merged.count, 2, "Сегменты разных спикеров не должны сливаться")
+    }
+
+    /// Тест: Не сливать сегменты с большим промежутком
+    func testDoNotMergeLargeGap() {
+        // Given: Два сегмента одного спикера с промежутком 2.0с (> threshold 1.5с)
+        let segment1 = MockChannelSegment(
+            startTime: 0.0, endTime: 2.0, channel: 0, speaker: .left,
+            audioSamples: [Float](repeating: 0.5, count: 32000)
+        )
+        let segment2 = MockChannelSegment(
+            startTime: 4.0, endTime: 6.0, channel: 0, speaker: .left,
+            audioSamples: [Float](repeating: 0.5, count: 32000)
+        )
+        let segments = [segment1, segment2]
+        let threshold: TimeInterval = 1.5
+
+        // When: Применяем слияние
+        let merged = mergeAdjacentSegments(segments, maxGap: threshold)
+
+        // Then: Сегменты НЕ должны быть объединены (промежуток > threshold)
+        XCTAssertEqual(merged.count, 2, "Сегменты с промежутком > threshold не должны сливаться")
+    }
+
+    /// Тест: Edge case - один сегмент
+    func testMergeSingleSegment() {
+        // Given: Только один сегмент
+        let segment = MockChannelSegment(
+            startTime: 0.0, endTime: 2.0, channel: 0, speaker: .left,
+            audioSamples: [Float](repeating: 0.5, count: 32000)
+        )
+        let segments = [segment]
+        let threshold: TimeInterval = 1.5
+
+        // When: Применяем слияние
+        let merged = mergeAdjacentSegments(segments, maxGap: threshold)
+
+        // Then: Возвращается тот же сегмент
+        XCTAssertEqual(merged.count, 1, "Один сегмент должен остаться без изменений")
+    }
+
+    /// Тест: Edge case - пустой массив
+    func testMergeEmptySegments() {
+        // Given: Пустой массив сегментов
+        let segments: [MockChannelSegment] = []
+        let threshold: TimeInterval = 1.5
+
+        // When: Применяем слияние
+        let merged = mergeAdjacentSegments(segments, maxGap: threshold)
+
+        // Then: Возвращается пустой массив
+        XCTAssertEqual(merged.count, 0, "Пустой массив должен остаться пустым")
+    }
+
+    /// Тест: Множественное слияние (3 сегмента подряд)
+    func testMergeMultipleConsecutiveSegments() {
+        // Given: Три сегмента одного спикера с промежутками < threshold
+        let segment1 = MockChannelSegment(
+            startTime: 0.0, endTime: 1.0, channel: 0, speaker: .left,
+            audioSamples: [Float](repeating: 0.5, count: 16000)
+        )
+        let segment2 = MockChannelSegment(
+            startTime: 2.0, endTime: 3.0, channel: 0, speaker: .left,
+            audioSamples: [Float](repeating: 0.5, count: 16000)
+        )
+        let segment3 = MockChannelSegment(
+            startTime: 4.0, endTime: 5.0, channel: 0, speaker: .left,
+            audioSamples: [Float](repeating: 0.5, count: 16000)
+        )
+        let segments = [segment1, segment2, segment3]
+        let threshold: TimeInterval = 1.5
+
+        // When: Применяем слияние
+        let merged = mergeAdjacentSegments(segments, maxGap: threshold)
+
+        // Then: Все три сегмента должны объединиться в один
+        XCTAssertEqual(merged.count, 1, "Три подряд идущих сегмента должны объединиться в один")
+        XCTAssertEqual(merged[0].segment.startTime, 0.0)
+        XCTAssertEqual(merged[0].segment.endTime, 5.0)
+    }
+
+    // MARK: - Helper Mock & Function
+
+    /// Mock структура для тестирования слияния сегментов
+    private struct MockChannelSegment {
+        let segment: SpeechSegment
+        let channel: Int
+        let speaker: DialogueTranscription.Turn.Speaker
+        let audioSamples: [Float]
+
+        init(startTime: TimeInterval, endTime: TimeInterval, channel: Int, speaker: DialogueTranscription.Turn.Speaker, audioSamples: [Float]) {
+            self.segment = SpeechSegment(startTime: startTime, endTime: endTime)
+            self.channel = channel
+            self.speaker = speaker
+            self.audioSamples = audioSamples
+        }
+    }
+
+    /// Helper функция для слияния сегментов (будет реализована в FileTranscriptionService)
+    private func mergeAdjacentSegments(_ segments: [MockChannelSegment], maxGap: TimeInterval) -> [MockChannelSegment] {
+        guard segments.count > 1 else { return segments }
+
+        var merged: [MockChannelSegment] = []
+        var currentSegment = segments[0]
+
+        for i in 1..<segments.count {
+            let nextSegment = segments[i]
+
+            // Проверка: тот же спикер и промежуток < maxGap
+            let gap = nextSegment.segment.startTime - currentSegment.segment.endTime
+            if currentSegment.speaker == nextSegment.speaker && gap < maxGap {
+                // Слияние: объединяем аудио и расширяем временные рамки
+                let mergedAudio = currentSegment.audioSamples + nextSegment.audioSamples
+                currentSegment = MockChannelSegment(
+                    startTime: currentSegment.segment.startTime,
+                    endTime: nextSegment.segment.endTime,
+                    channel: currentSegment.channel,
+                    speaker: currentSegment.speaker,
+                    audioSamples: mergedAudio
+                )
+            } else {
+                // Разные спикеры или слишком большой промежуток - сохраняем текущий
+                merged.append(currentSegment)
+                currentSegment = nextSegment
+            }
+        }
+        merged.append(currentSegment) // Не забыть последний сегмент
+
+        return merged
+    }
 }

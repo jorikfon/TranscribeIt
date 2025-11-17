@@ -115,6 +115,69 @@ struct SettingsPanel: View {
                 .border(Color.secondary.opacity(0.2))
             }
 
+            // Context Optimization Settings
+            VStack(alignment: .leading, spacing: Constants.labelVerticalSpacing) {
+                Text("Context Optimization")
+                    .font(.system(size: Constants.labelFontSize, weight: .medium))
+                    .foregroundColor(.secondary)
+
+                // Max context length slider
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Max Context Length:")
+                            .font(.system(size: Constants.descriptionFontSize))
+                        Spacer()
+                        Text("\(userSettings.maxContextLength) chars")
+                            .font(.system(size: Constants.descriptionFontSize, weight: .medium))
+                            .foregroundColor(.blue)
+                    }
+                    Slider(value: Binding(
+                        get: { Double(userSettings.maxContextLength) },
+                        set: { userSettings.maxContextLength = Int($0) }
+                    ), in: 300...700, step: 50)
+                }
+
+                // Max recent turns slider
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Recent Turns:")
+                            .font(.system(size: Constants.descriptionFontSize))
+                        Spacer()
+                        Text("\(userSettings.maxRecentTurns) turns")
+                            .font(.system(size: Constants.descriptionFontSize, weight: .medium))
+                            .foregroundColor(.blue)
+                    }
+                    Slider(value: Binding(
+                        get: { Double(userSettings.maxRecentTurns) },
+                        set: { userSettings.maxRecentTurns = Int($0) }
+                    ), in: 3...10, step: 1)
+                }
+
+                // Post-VAD merge threshold slider
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("VAD Merge Threshold:")
+                            .font(.system(size: Constants.descriptionFontSize))
+                        Spacer()
+                        Text(String(format: "%.1fs", userSettings.postVADMergeThreshold))
+                            .font(.system(size: Constants.descriptionFontSize, weight: .medium))
+                            .foregroundColor(.blue)
+                    }
+                    Slider(value: $userSettings.postVADMergeThreshold, in: 0.5...3.0, step: 0.1)
+                }
+
+                // Toggles for features
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Extract Named Entities", isOn: $userSettings.enableEntityExtraction)
+                        .font(.system(size: Constants.descriptionFontSize))
+                        .help("Extract names and companies from dialogue history to improve recognition")
+
+                    Toggle("Include Vocabulary Terms", isOn: $userSettings.enableVocabularyIntegration)
+                        .font(.system(size: Constants.descriptionFontSize))
+                        .help("Include custom vocabulary terms in context prompt")
+                }
+            }
+
             // Кнопка перезапуска
             HStack {
                 Spacer()

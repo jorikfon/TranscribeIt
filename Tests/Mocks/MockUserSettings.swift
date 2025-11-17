@@ -123,6 +123,14 @@ public final class MockUserSettings: UserSettingsProtocol {
     public var baseContextPrompt: String = ""
     public var transcriptionLanguage: String = "en"
 
+    // MARK: - Context Optimization
+
+    public var maxContextLength: Int = 600
+    public var maxRecentTurns: Int = 5
+    public var enableEntityExtraction: Bool = false
+    public var enableVocabularyIntegration: Bool = true
+    public var postVADMergeThreshold: TimeInterval = 1.5
+
     public func buildFullPrefillPrompt() -> String {
         buildFullPrefillPromptCallCount += 1
 
@@ -173,6 +181,11 @@ public final class MockUserSettings: UserSettingsProtocol {
         transcriptionLanguage = "en"
         fileTranscriptionMode = .vad
         vadAlgorithmType = .spectralDefault
+        maxContextLength = 600
+        maxRecentTurns = 5
+        enableEntityExtraction = false
+        enableVocabularyIntegration = true
+        postVADMergeThreshold = 1.5
 
         // Сброс счетчиков
         addStopWordCallCount = 0

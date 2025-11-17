@@ -253,14 +253,16 @@ This ensures the context is properly understood by the Whisper model decoder.
 - Single file transcription workflow
 - Audio format conversion via AudioCache
 - Stereo channel separation with VAD
-- Context-aware segment transcription
+- Context-aware segment transcription with intelligent prompt building
 - Real-time progress tracking
 - Base context prompt injection for domain/terminology understanding
 
 **Key Methods**:
 ```swift
 public func transcribeFile(url: URL, updateProgress: @escaping (Double) -> Void) async throws -> DialogueTranscription
-private func buildContextPrompt(from turns: [DialogueTranscription.Turn], maxTurns: Int = 5) -> String
+private func buildContextPrompt(from turns: [DialogueTranscription.Turn], maxTurns: Int? = nil) -> String
+private func mergeAdjacentSegments(_ segments: [ChannelSegment], maxGap: TimeInterval) -> [ChannelSegment]
+private func extractNamedEntities(from turns: [DialogueTranscription.Turn]) -> [String]
 ```
 
 **Dependencies**: `WhisperService`, `UserSettingsProtocol`, `AudioCache`
@@ -268,16 +270,40 @@ private func buildContextPrompt(from turns: [DialogueTranscription.Turn], maxTur
 **Flow**:
 1. Load audio via AudioCache (checks cache first)
 2. Detect voice activity segments with VAD
-3. Build context prompt combining base context + recent dialogue history
-4. Transcribe each segment with context from previous segments
-5. Update ViewModel progress in real-time
+3. **Post-VAD merge**: Combine adjacent same-speaker segments with gaps < threshold
+4. Build context prompt combining:
+   - Base context prompt (domain/terminology)
+   - Named entities (if enabled): extracted names, companies from recent 20 turns
+   - Vocabulary terms (if enabled): custom dictionary terms (up to 15)
+   - Recent dialogue history (configurable N turns)
+5. Transcribe each segment with context from previous segments
+6. Smart truncation: limit to maxContextLength with word-boundary detection and Unicode safety
+7. Update ViewModel progress in real-time
 
 **Context Prompt System**:
 The service builds intelligent context prompts for each transcription segment:
 - **Base context** (`settings.baseContextPrompt`): Domain/terminology context applied to all segments (e.g., "Medical consultation transcript with technical terms")
-- **Dialogue history**: Last 5 turns from previous speakers to maintain conversation flow
-- **Length limiting**: Context truncated to 300 characters for optimal performance
+- **Named entity extraction** (if enabled): Extracts names, companies from recent 20 turns using cached regex patterns
+  - Filters stop words (common sentence starters)
+  - Limited to recent turns for memory optimization and relevance
+- **Vocabulary integration** (if enabled): Includes up to 15 custom terms from enabled dictionaries
+  - Controlled by `ContextOptimizationConstants.maxVocabularyTermsInContext`
+- **Dialogue history**: Last N turns from previous speakers (configurable via `settings.maxRecentTurns`)
+- **Smart truncation**: Context limited to `settings.maxContextLength` with word-boundary detection
+  - Finds last space before limit to avoid mid-word cuts
+  - Unicode-safe with `limitedBy` parameter
+  - Default 600 characters (~200 tokens), configurable 300-700 range
+  - Whisper supports up to 224 tokens (~600-800 characters)
+  - Debug logging for context composition statistics
+- **Post-VAD segment merging**: Combines adjacent same-speaker segments with gaps < `settings.postVADMergeThreshold`
+  - Reduces over-segmentation from natural pauses
+  - Default 1.5s, configurable 0.5-3.0s range
 - **Mono transcription**: Base context prompt applied directly for single-channel audio
+
+**Performance Optimizations**:
+- Static regex caching for entity extraction (compiled once at class level)
+- Limited entity extraction to recent 20 turns (prevents unbounded memory growth)
+- Vocabulary terms capped at 15 to preserve context budget
 
 ### 3. BatchTranscriptionService (`Sources/Services/BatchTranscriptionService.swift`)
 
@@ -335,6 +361,13 @@ The service builds intelligent context prompts for each transcription segment:
 - Language picker (Auto-detect, Russian, English)
 - VAD algorithm/segmentation method picker
 - Base context prompt text editor (auto-saves to UserSettings)
+- **Context Optimization** section (NEW):
+  - Max Context Length slider (300-700 chars) with live value display
+  - Recent Turns slider (3-10 turns) with live value display
+  - VAD Merge Threshold slider (0.5-3.0s) with formatted display
+  - Enable Entity Extraction toggle with tooltip
+  - Enable Vocabulary Integration toggle with tooltip
+  - All controls use two-way SwiftUI bindings to UserSettings
 - Retranscribe button for applying new settings
 - Requires both `modelManager` and `userSettings` as dependencies
 
@@ -342,7 +375,7 @@ The service builds intelligent context prompts for each transcription segment:
 ```
 FileTranscriptionView
 ├── HeaderView (file name, status, actions)
-├── SettingsPanel (model, language, VAD, base context prompt)
+├── SettingsPanel (model, language, VAD, base context prompt, context optimization)
 ├── ProgressSection (model loading, transcription progress)
 └── ContentView
     ├── TranscriptionContentView
@@ -410,6 +443,28 @@ AFTER:  [Speaker 1: 0-2s] -0.15s- [Speaker 2: 2.15-4.15s]
 - **Custom Prefill Prompt** (`customPrefillPrompt`): Additional vocabulary terms for model priming (separate from base context)
 - **Dictionary Selection**: Active vocabulary dictionaries for corrections
 - **Quality Enhancement**: Temperature fallback, compression ratio thresholds
+
+**Context Optimization Settings** (NEW):
+- **Max Context Length** (`maxContextLength`): 300-700 characters (default: 600)
+  - Controls how much context is sent to Whisper decoder
+  - Whisper supports up to 224 tokens (~600-800 characters)
+  - Stored in: `com.transcribeit.maxContextLength`
+- **Max Recent Turns** (`maxRecentTurns`): 3-10 turns (default: 5)
+  - Number of previous dialogue turns included in context
+  - Adaptive: fewer long turns or more short turns
+  - Stored in: `com.transcribeit.maxRecentTurns`
+- **Enable Entity Extraction** (`enableEntityExtraction`): Boolean (default: false)
+  - Extracts names, companies from dialogue history
+  - Adds to context prompt for better recognition
+  - Stored in: `com.transcribeit.enableEntityExtraction`
+- **Enable Vocabulary Integration** (`enableVocabularyIntegration`): Boolean (default: true)
+  - Includes custom vocabulary terms in context
+  - Uses terms from VocabularyManager
+  - Stored in: `com.transcribeit.enableVocabularyIntegration`
+- **Post-VAD Merge Threshold** (`postVADMergeThreshold`): 0.5-3.0 seconds (default: 1.5)
+  - Merges adjacent same-speaker segments with gaps below threshold
+  - Reduces over-segmentation from natural speech pauses
+  - Stored in: `com.transcribeit.postVADMergeThreshold`
 
 **Pattern**: All persisted properties follow the same structure:
 ```swift
@@ -645,21 +700,26 @@ print("Visual duration: \(mapper.totalVisualDuration(realDuration: duration))")
 
 - Dependency injection: `Sources/DI/DependencyContainer.swift`
 - File transcription: `Sources/Services/FileTranscriptionService.swift`
-  - Context prompt building: `buildContextPrompt()` method
+  - Context optimization constants: `ContextOptimizationConstants` enum (lines 290-296)
+  - Static regex caching: `entityExtractionRegex` (lines 300-305)
+  - Context prompt building: `buildContextPrompt()` method (lines 971-1053)
+  - Named entity extraction: `extractNamedEntities()` method (lines 931-967)
+  - Post-VAD segment merging: `mergeAdjacentSegments()` method (lines 723-760)
 - WhisperKit integration: `Sources/Services/WhisperService.swift`
   - Context tokenization: `transcribe(audioSamples:contextPrompt:)` method
 - MVVM ViewModel: `Sources/UI/ViewModels/FileTranscriptionViewModel.swift`
-- Settings UI: `Sources/UI/Views/Transcription/SettingsPanel.swift`
-  - Base context prompt TextEditor component
-- User preferences: `Sources/Utils/UserSettings.swift`
-  - `baseContextPrompt` property with UserDefaults persistence
+- Settings UI: `Sources/UI/Views/Transcription/SettingsPanel.swift` lines 118-179
+  - Context Optimization section with 5 controls (sliders and toggles)
+- User preferences: `Sources/Utils/UserSettings.swift` lines 383-420
+  - 5 context optimization properties with UserDefaults persistence
+  - `maxContextLength`, `maxRecentTurns`, `enableEntityExtraction`, `enableVocabularyIntegration`, `postVADMergeThreshold`
 - Timeline compression: `Sources/Utils/Timeline/TimelineMapper.swift`
 - Audio caching: `Sources/Utils/Audio/AudioCache.swift`
 - Typed errors: `Sources/Errors/TranscriptionError.swift`
 - Protocol abstractions: `Sources/Protocols/UserSettingsProtocol.swift`
-  - `baseContextPrompt` protocol requirement
+  - Context optimization protocol requirements
 - Mock implementations: `Tests/Mocks/MockUserSettings.swift`
-  - `baseContextPrompt` test property
+  - All context optimization test properties
 - Audio player: `Sources/Utils/AudioPlayerManager.swift`
 - Model management: `Sources/Utils/ModelManager.swift`
 

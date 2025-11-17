@@ -136,6 +136,30 @@ public struct DialogueTranscription {
     }
 }
 
+/// Snapshot настроек контекстной оптимизации для изоляции транскрипций
+/// Захватывается в начале transcribeFile() чтобы изменения в других экземплярах приложения
+/// не влияли на текущую транскрипцию
+private struct ContextOptimizationSettings {
+    let maxContextLength: Int
+    let maxRecentTurns: Int
+    let enableEntityExtraction: Bool
+    let enableVocabularyIntegration: Bool
+    let postVADMergeThreshold: TimeInterval
+    let baseContextPrompt: String
+
+    /// Создает snapshot из текущих настроек пользователя
+    static func capture(from userSettings: UserSettingsProtocol) -> ContextOptimizationSettings {
+        return ContextOptimizationSettings(
+            maxContextLength: userSettings.maxContextLength,
+            maxRecentTurns: userSettings.maxRecentTurns,
+            enableEntityExtraction: userSettings.enableEntityExtraction,
+            enableVocabularyIntegration: userSettings.enableVocabularyIntegration,
+            postVADMergeThreshold: userSettings.postVADMergeThreshold,
+            baseContextPrompt: userSettings.baseContextPrompt
+        )
+    }
+}
+
 /// Профессиональный сервис для транскрипции audio/video файлов с поддержкой стерео разделения
 ///
 /// `FileTranscriptionService` обеспечивает высококачественную транскрипцию аудио файлов с автоматическим
@@ -261,6 +285,24 @@ public class FileTranscriptionService {
         /// Универсальный preset для большинства случаев
         public static let `default` = VADAlgorithm.spectral(.default)
     }
+
+    /// Константы для оптимизации контекста в длинных звонках
+    private enum ContextOptimizationConstants {
+        /// Максимальное количество терминов словаря в контексте
+        static let maxVocabularyTermsInContext = 15
+
+        /// Максимальное количество последних реплик для извлечения сущностей
+        static let maxRecentTurnsForEntityExtraction = 20
+    }
+
+    /// Кэшированное регулярное выражение для извлечения именованных сущностей
+    /// (оптимизация производительности - компилируется один раз)
+    private static let entityExtractionRegex: NSRegularExpression? = {
+        let englishPattern = "\\b[A-Z][a-z]+"
+        let russianPattern = "\\b[А-ЯЁ][а-яё]+"
+        let combinedPattern = "(\(englishPattern))|(\(russianPattern))"
+        return try? NSRegularExpression(pattern: combinedPattern)
+    }()
 
     private let whisperService: WhisperService
     private let userSettings: UserSettingsProtocol
@@ -673,6 +715,45 @@ public class FileTranscriptionService {
         let audioSamples: [Float]
     }
 
+    /// Сливает соседние сегменты одного спикера с коротким промежутком
+    /// - Parameters:
+    ///   - segments: Массив сегментов для слияния (должен быть отсортирован по времени)
+    ///   - maxGap: Максимальный промежуток между сегментами для слияния (в секундах)
+    /// - Returns: Массив слитых сегментов
+    private func mergeAdjacentSegments(_ segments: [ChannelSegment], maxGap: TimeInterval) -> [ChannelSegment] {
+        guard segments.count > 1 else { return segments }
+
+        var merged: [ChannelSegment] = []
+        var currentSegment = segments[0]
+
+        for i in 1..<segments.count {
+            let nextSegment = segments[i]
+
+            // Проверка: тот же спикер и промежуток < maxGap
+            let gap = nextSegment.segment.startTime - currentSegment.segment.endTime
+            if currentSegment.speaker == nextSegment.speaker && gap < maxGap {
+                // Слияние: объединяем аудио и расширяем временные рамки
+                let mergedAudio = currentSegment.audioSamples + nextSegment.audioSamples
+                currentSegment = ChannelSegment(
+                    segment: SpeechSegment(
+                        startTime: currentSegment.segment.startTime,
+                        endTime: nextSegment.segment.endTime
+                    ),
+                    channel: currentSegment.channel,
+                    speaker: currentSegment.speaker,
+                    audioSamples: mergedAudio
+                )
+            } else {
+                // Разные спикеры или слишком большой промежуток - сохраняем текущий
+                merged.append(currentSegment)
+                currentSegment = nextSegment
+            }
+        }
+        merged.append(currentSegment) // Не забыть последний сегмент
+
+        return merged
+    }
+
     /// Транскрибирует стерео файл как диалог (левый и правый каналы отдельно)
     /// УЛУЧШЕННЫЙ АЛГОРИТМ: обрабатывает сегменты в шахматном порядке по времени,
     /// используя предыдущий диалог как контекст для улучшения качества распознавания
@@ -771,6 +852,14 @@ public class FileTranscriptionService {
         allSegments.sort(by: { $0.segment.startTime < $1.segment.startTime })
         LogManager.app.info("🔄 Сегменты отсортированы по времени для последовательной обработки (\(allSegments.count) всего)")
 
+        // Post-VAD merge: сливаем соседние сегменты одного спикера с коротким промежутком
+        let segmentCountBefore = allSegments.count
+        allSegments = mergeAdjacentSegments(allSegments, maxGap: self.userSettings.postVADMergeThreshold)
+        let segmentCountAfter = allSegments.count
+        if segmentCountBefore != segmentCountAfter {
+            LogManager.app.info("🔗 Post-VAD merge: \(segmentCountBefore) → \(segmentCountAfter) сегментов (порог: \(String(format: "%.1f", self.userSettings.postVADMergeThreshold))с)")
+        }
+
         return allSegments
     }
 
@@ -802,8 +891,8 @@ public class FileTranscriptionService {
                 continue
             }
 
-            // Формируем контекст из последних 5 реплик
-            let contextPrompt = buildContextPrompt(from: turns, maxTurns: 5)
+            // Формируем контекст из последних N реплик (используем настройку)
+            let contextPrompt = buildContextPrompt(from: turns)
 
             let speakerName = speaker == .left ? "Speaker 1" : "Speaker 2"
             LogManager.app.info("Транскрибируем \(speakerName): \(String(format: "%.1f", segment.startTime))s - \(String(format: "%.1f", segment.endTime))s (контекст: \(contextPrompt.isEmpty ? "нет" : "\(contextPrompt.count) символов"))")
@@ -836,19 +925,87 @@ public class FileTranscriptionService {
         return turns
     }
 
+    /// Извлекает именованные сущности (имена, компании) из реплик диалога
+    /// - Parameter turns: Массив реплик для анализа
+    /// - Returns: Массив уникальных сущностей
+    private func extractNamedEntities(from turns: [DialogueTranscription.Turn]) -> [String] {
+        // Используем кэшированное регулярное выражение для производительности
+        guard let regex = Self.entityExtractionRegex else {
+            LogManager.app.warning("Entity extraction regex не инициализирован")
+            return []
+        }
+
+        // Стоп-слова для фильтрации (общие слова в начале предложений)
+        let stopWords: Set<String> = [
+            "The", "And", "Or", "But", "If", "When", "Where", "Who", "What", "Why", "How",
+            "Speaker", "Yes", "No", "Ok", "Okay", "Well", "So", "Then", "Now", "Here", "There",
+            "This", "That", "These", "Those", "He", "She", "It", "They", "We", "You", "I"
+        ]
+
+        var entities = Set<String>()
+
+        // Извлекаем сущности только из последних N реплик (оптимизация памяти и релевантности)
+        let recentTurnsForEntities = Array(turns.suffix(ContextOptimizationConstants.maxRecentTurnsForEntityExtraction))
+
+        for turn in recentTurnsForEntities {
+            let text = turn.text
+            let range = NSRange(text.startIndex..., in: text)
+            let matches = regex.matches(in: text, range: range)
+
+            for match in matches {
+                if let matchRange = Range(match.range, in: text) {
+                    let entity = String(text[matchRange])
+                    // Фильтруем стоп-слова
+                    if !stopWords.contains(entity) {
+                        entities.insert(entity)
+                    }
+                }
+            }
+        }
+
+        return Array(entities).sorted() // Возвращаем отсортированный массив
+    }
+
     /// НОВОЕ: Формирует контекстный промпт из предыдущих реплик диалога
     /// Помогает Whisper лучше распознавать имена, термины и контекст разговора
-    private func buildContextPrompt(from turns: [DialogueTranscription.Turn], maxTurns: Int = 5) -> String {
+    private func buildContextPrompt(from turns: [DialogueTranscription.Turn], maxTurns: Int? = nil) -> String {
         var contextParts: [String] = []
+        var debugStats = (base: 0, entities: 0, vocab: 0, turns: 0)
 
         // Добавляем базовый контекстный промпт если указан
         let baseContextPrompt = self.userSettings.baseContextPrompt
         if !baseContextPrompt.isEmpty {
             contextParts.append(baseContextPrompt)
+            debugStats.base = baseContextPrompt.count
         }
 
-        // Берем последние N реплик
-        let recentTurns = Array(turns.suffix(maxTurns))
+        // Извлекаем именованные сущности если включено
+        if self.userSettings.enableEntityExtraction && !turns.isEmpty {
+            let entities = extractNamedEntities(from: turns)
+            if !entities.isEmpty {
+                let entitiesContext = "Named entities: " + entities.joined(separator: ", ")
+                contextParts.append(entitiesContext)
+                debugStats.entities = entities.count
+            }
+        }
+
+        // Интегрируем термины из словаря если включено
+        var vocabularyTermsCount = 0
+        if self.userSettings.enableVocabularyIntegration {
+            let vocabularyWords = self.userSettings.getEnabledVocabularyWords()
+            if !vocabularyWords.isEmpty {
+                // Ограничиваем количество терминов для сохранения места в контексте
+                let limitedWords = Array(vocabularyWords.prefix(ContextOptimizationConstants.maxVocabularyTermsInContext))
+                let vocabularyContext = "Vocabulary: " + limitedWords.joined(separator: ", ")
+                contextParts.append(vocabularyContext)
+                vocabularyTermsCount = limitedWords.count
+                debugStats.vocab = vocabularyTermsCount
+            }
+        }
+
+        // Берем последние N реплик (используем настройку или переданное значение)
+        let turnsToTake = maxTurns ?? self.userSettings.maxRecentTurns
+        let recentTurns = Array(turns.suffix(turnsToTake))
 
         if !recentTurns.isEmpty {
             // Формируем контекст в виде диалога
@@ -857,17 +1014,42 @@ public class FileTranscriptionService {
                 return "\(speakerName): \(turn.text)"
             }.joined(separator: " ")
             contextParts.append(dialogueContext)
+            debugStats.turns = recentTurns.count
         }
 
         // Объединяем все части контекста
         let fullContext = contextParts.joined(separator: ". ")
 
-        // Ограничиваем длину контекста (примерно 300 символов оптимально)
-        let maxLength = 300
+        // Ограничиваем длину контекста используя настройку maxContextLength
+        let maxLength = self.userSettings.maxContextLength
         if fullContext.count > maxLength {
-            let endIndex = fullContext.index(fullContext.startIndex, offsetBy: maxLength)
-            return String(fullContext[..<endIndex]) + "..."
+            // Умное усечение по границе слова с Unicode-безопасностью
+            guard let targetIndex = fullContext.index(fullContext.startIndex, offsetBy: maxLength, limitedBy: fullContext.endIndex) else {
+                // Edge case: maxLength больше длины строки (не должно происходить, но безопасность)
+                return fullContext
+            }
+
+            let searchRange = fullContext.startIndex..<targetIndex
+
+            // Ищем последний пробел перед лимитом
+            if let lastSpaceRange = fullContext.range(of: " ", options: .backwards, range: searchRange) {
+                // Обрезаем по последнему пробелу
+                let truncated = String(fullContext[..<lastSpaceRange.lowerBound])
+                let finalLength = truncated.count
+                LogManager.transcription.debug("Context truncated: base=\(debugStats.base)ch, entities=\(debugStats.entities), vocab=\(debugStats.vocab), turns=\(debugStats.turns), \(fullContext.count)ch → \(finalLength)ch")
+                return truncated + "..."
+            } else {
+                // Edge case: нет пробелов - обрезаем по лимиту с Unicode-безопасностью
+                // limitedBy гарантирует, что не обрежем посреди grapheme cluster (emoji, диакритики)
+                let safeIndex = fullContext.index(fullContext.startIndex, offsetBy: maxLength, limitedBy: fullContext.endIndex) ?? fullContext.endIndex
+                let truncated = String(fullContext[..<safeIndex])
+                LogManager.transcription.debug("Context truncated (no spaces): base=\(debugStats.base)ch, entities=\(debugStats.entities), vocab=\(debugStats.vocab), turns=\(debugStats.turns), \(fullContext.count)ch → \(truncated.count)ch")
+                return truncated + "..."
+            }
         }
+
+        // Логируем статистику построения контекста для отладки качества
+        LogManager.transcription.debug("Context built: base=\(debugStats.base)ch, entities=\(debugStats.entities), vocab=\(debugStats.vocab), turns=\(debugStats.turns), final=\(fullContext.count)ch")
 
         return fullContext
     }

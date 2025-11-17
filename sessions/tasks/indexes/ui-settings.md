@@ -12,7 +12,6 @@ description: Tasks related to user interface improvements and application settin
 
 ### Medium Priority
 - `m-implement-warmup-prompt-settings.md` - Add warmup prompt textarea in SettingsPanel with autosave
-- `m-implement-context-optimization-long-calls.md` - Optimize context building for long phone calls with A/B testing and multi-window support
 
 ### Low Priority
 
@@ -20,3 +19,4 @@ description: Tasks related to user interface improvements and application settin
 
 ## Completed Tasks
 <!-- Move tasks here when completed, maintaining the format -->
+- `m-implement-context-optimization-long-calls.md` - Optimize context building for long phone calls (core features complete, multi-window deferred)

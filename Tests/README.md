@@ -10,10 +10,11 @@ Tests/
 ├── Utils/                            # Тесты утилит
 │   ├── Timeline/                     # Тесты TimelineMapper
 │   ├── VAD/                          # Тесты VAD алгоритмов
-│   └── Audio/                        # Тесты AudioNormalizer, AudioCache
+│   ├── Audio/                        # Тесты AudioNormalizer, AudioCache
+│   └── UserSettingsTests.swift      # Тесты UserSettings персистенции
 ├── Services/                         # Тесты сервисов
 │   ├── WhisperServiceTests.swift
-│   ├── FileTranscriptionServiceTests.swift
+│   ├── FileTranscriptionServiceTests.swift  # Включает тесты buildContextPrompt, mergeAdjacentSegments
 │   └── BatchTranscriptionServiceTests.swift
 ├── UI/                               # Тесты UI компонентов
 │   └── ViewModels/                   # Тесты ViewModel
@@ -21,7 +22,7 @@ Tests/
 │   └── TranscriptionIntegrationTests.swift
 └── Mocks/                            # Mock-реализации для тестирования
     ├── MockVocabularyManager.swift
-    ├── MockUserSettings.swift
+    ├── MockUserSettings.swift       # Включает контекстные оптимизации
     └── MockModelManager.swift
 ```
 
@@ -60,6 +61,8 @@ Test Target настроен в `Package.swift`:
 Цель проекта - достичь >60% покрытия core логики unit-тестами:
 
 - ✅ Базовая инфраструктура тестов
+- ✅ UserSettings персистенция (context optimization settings)
+- ✅ FileTranscriptionService context building (word-boundary truncation, adaptive turns)
 - ⬜ TimelineMapper (приоритет: P1)
 - ⬜ VAD алгоритмы (приоритет: P1)
 - ⬜ AudioNormalizer (приоритет: P2)
