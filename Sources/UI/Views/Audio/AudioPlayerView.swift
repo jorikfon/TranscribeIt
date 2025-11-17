@@ -4,7 +4,6 @@ import SwiftUI
 enum AudioPlayerConstants {
     // Icon sizes
     static let playButtonIconSize: CGFloat = 24
-    static let monoButtonIconSize: CGFloat = 16
     static let speedIconSize: CGFloat = 10
     static let volumeIconSize: CGFloat = 12
 
@@ -114,9 +113,6 @@ public struct AudioPlayerView: View {
             // Кнопка Play/Pause
             playPauseButton
 
-            // Кнопка Моно/Стерео
-            monoStereoButton
-
             // Контрол скорости воспроизведения
             speedControl
 
@@ -148,18 +144,6 @@ public struct AudioPlayerView: View {
                 .foregroundColor(.blue)
         }
         .buttonStyle(PlainButtonStyle())
-    }
-
-    private var monoStereoButton: some View {
-        Button(action: {
-            audioPlayer.setMonoMode(!audioPlayer.state.settings.monoMode)
-        }) {
-            Image(systemName: audioPlayer.state.settings.monoMode ? "speaker.wave.1" : "speaker.wave.2")
-                .font(.system(size: AudioPlayerConstants.monoButtonIconSize))
-                .foregroundColor(audioPlayer.state.settings.monoMode ? .green : .secondary)
-        }
-        .buttonStyle(PlainButtonStyle())
-        .help(audioPlayer.state.settings.monoMode ? "Моно режим (оба канала в обоих ушах)" : "Стерео режим")
     }
 
     private var speedControl: some View {

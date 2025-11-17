@@ -20,7 +20,6 @@ import Foundation
 ///
 /// // Настройки воспроизведения
 /// state.settings.playbackRate = 1.5  // 1.5x скорость
-/// state.settings.monoMode = true
 /// ```
 public struct AudioPlayerState: Equatable {
     /// Состояние воспроизведения (play/pause, позиция)
@@ -146,8 +145,8 @@ public struct AudioState: Equatable {
 
 /// Настройки воспроизведения
 ///
-/// Содержит настройки скорости воспроизведения, режима каналов
-/// и поведения при конкурентном воспроизведении.
+/// Содержит настройки скорости воспроизведения и поведения при конкурентном воспроизведении.
+/// Стерео файлы автоматически воспроизводятся с 90/10 смешиванием каналов для комфортного прослушивания.
 public struct AudioSettings: Equatable {
     /// Скорость воспроизведения (0.5x - 2.0x)
     ///
@@ -155,12 +154,6 @@ public struct AudioSettings: Equatable {
     /// - 1.0 = нормальная скорость
     /// - 2.0 = двойная скорость (быстрее)
     public var playbackRate: Float = 1.0
-
-    /// Моно режим (оба канала в обоих ушах)
-    ///
-    /// - true: стерео файлы конвертируются в моно (L+R в оба уха)
-    /// - false: стерео файлы воспроизводятся раздельно (L в левое, R в правое)
-    public var monoMode: Bool = true
 
     /// Останавливать другие плееры при воспроизведении
     ///
@@ -172,15 +165,12 @@ public struct AudioSettings: Equatable {
     ///
     /// - Parameters:
     ///   - playbackRate: Скорость воспроизведения (по умолчанию: 1.0)
-    ///   - monoMode: Моно режим (по умолчанию: true)
     ///   - pauseOtherPlayersEnabled: Останавливать другие плееры (по умолчанию: true)
     public init(
         playbackRate: Float = 1.0,
-        monoMode: Bool = true,
         pauseOtherPlayersEnabled: Bool = true
     ) {
         self.playbackRate = playbackRate
-        self.monoMode = monoMode
         self.pauseOtherPlayersEnabled = pauseOtherPlayersEnabled
     }
 

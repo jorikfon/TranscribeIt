@@ -22,15 +22,23 @@ import Combine
 ///
 /// // Настройки воспроизведения
 /// player.state.settings.playbackRate  // 0.5 - 2.0
-/// player.state.settings.monoMode  // true/false
 /// ```
+///
+/// ## Смешивание стерео каналов
+///
+/// Для комфортного прослушивания телефонных разговоров стерео файлы автоматически воспроизводятся
+/// с 65/35 смешиванием каналов:
+/// - Левое ухо: 65% левого канала + 35% правого канала
+/// - Правое ухо: 35% левого канала + 65% правого канала
+///
+/// Это создаёт почти моно звучание с лёгким ощущением направления (собеседник "чуть сбоку").
 public class AudioPlayerManager: ObservableObject {
     /// Централизованное состояние аудио плеера
     ///
     /// Объединяет все @Published свойства в логические группы:
     /// - `playback`: состояние воспроизведения (isPlaying, currentTime, duration)
     /// - `audio`: настройки аудио (volume, volumeBoost)
-    /// - `settings`: настройки воспроизведения (playbackRate, monoMode, pauseOtherPlayersEnabled)
+    /// - `settings`: настройки воспроизведения (playbackRate, pauseOtherPlayersEnabled)
     @Published public var state = AudioPlayerState()
 
     // AVAudioEngine для поддержки усиления громкости выше 100%
@@ -38,7 +46,6 @@ public class AudioPlayerManager: ObservableObject {
     private let playerNode = AVAudioPlayerNode()
     private let timePitch = AVAudioUnitTimePitch()
     private let mixer = AVAudioMixerNode()
-    private let stereoToMonoMixer = AVAudioMixerNode()  // Для конвертации стерео в моно
 
     private var audioFile: AVAudioFile?
     private var displayLink: Timer?
@@ -66,11 +73,9 @@ public class AudioPlayerManager: ObservableObject {
     /// Создает граф обработки аудио:
     /// - playerNode: воспроизведение аудио файла
     /// - timePitch: изменение скорости воспроизведения
-    /// - stereoToMonoMixer: конвертация стерео в моно (опционально)
     /// - mixer: управление громкостью с усилением
     ///
     /// - Note: Соединения между узлами устанавливаются в `loadAudio(from:)`
-    ///         в зависимости от формата файла и настроек моно/стерео режима
     private func setupAudioEngine() {
         attachAudioNodes()
         configureMixerDefaults()
@@ -81,7 +86,6 @@ public class AudioPlayerManager: ObservableObject {
     private func attachAudioNodes() {
         audioEngine.attach(playerNode)
         audioEngine.attach(timePitch)
-        audioEngine.attach(stereoToMonoMixer)
         audioEngine.attach(mixer)
     }
 
@@ -95,61 +99,21 @@ public class AudioPlayerManager: ObservableObject {
     /// Вызывается перед настройкой нового аудио файла для очистки предыдущих соединений
     private func disconnectAllNodes() {
         audioEngine.disconnectNodeInput(timePitch)
-        audioEngine.disconnectNodeInput(stereoToMonoMixer)
         audioEngine.disconnectNodeInput(mixer)
     }
 
-    /// Настраивает граф обработки аудио в зависимости от формата файла
+    /// Настраивает граф обработки аудио
     ///
-    /// Создает одну из двух конфигураций:
-    /// - **Моно режим (стерео файл)**: playerNode → timePitch → stereoToMonoMixer → mixer → output
-    /// - **Стерео/моно файл**: playerNode → timePitch → mixer → output
+    /// Создает граф: playerNode → timePitch → mixer → output
     ///
-    /// - Parameters:
-    ///   - format: Формат аудио файла (sample rate, количество каналов)
-    ///   - isStereo: Является ли файл стерео (2+ канала)
-    private func configureAudioGraph(format: AVAudioFormat, isStereo: Bool) {
-        if state.settings.monoMode && isStereo {
-            configureMonoModeGraph(format: format)
-        } else {
-            configureStereoModeGraph(format: format)
-        }
-    }
-
-    /// Настраивает граф для моно режима (стерео → моно конвертация)
-    ///
-    /// Граф: playerNode → timePitch → stereoToMonoMixer → mixer → output
-    ///
-    /// - Parameter format: Формат стерео аудио файла
-    private func configureMonoModeGraph(format: AVAudioFormat) {
-        // playerNode → timePitch (стерео)
-        audioEngine.connect(playerNode, to: timePitch, format: format)
-
-        // Создаем моно формат для финального вывода
-        let monoFormat = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate, channels: 1)!
-
-        // timePitch → stereoToMonoMixer (стерео → моно)
-        audioEngine.connect(timePitch, to: stereoToMonoMixer, format: format)
-
-        // stereoToMonoMixer → mixer → output (моно)
-        audioEngine.connect(stereoToMonoMixer, to: mixer, format: monoFormat)
-        audioEngine.connect(mixer, to: audioEngine.mainMixerNode, format: monoFormat)
-
-        LogManager.app.info("Моно режим включен: стерео -> моно")
-    }
-
-    /// Настраивает граф для стерео режима или моно файла (без конвертации)
-    ///
-    /// Граф: playerNode → timePitch → mixer → output
-    ///
-    /// - Parameter format: Формат аудио файла (стерео или моно)
-    private func configureStereoModeGraph(format: AVAudioFormat) {
+    /// - Parameter format: Формат аудио файла
+    private func configureAudioGraph(format: AVAudioFormat) {
         // playerNode → timePitch → mixer → output
         audioEngine.connect(playerNode, to: timePitch, format: format)
         audioEngine.connect(timePitch, to: mixer, format: format)
         audioEngine.connect(mixer, to: audioEngine.mainMixerNode, format: format)
 
-        LogManager.app.info("Стерео режим или моно файл")
+        LogManager.app.info("Аудио граф настроен для \(format.channelCount) канал(ов)")
     }
 
     /// Применяет текущие настройки к узлам аудио графа
@@ -158,6 +122,67 @@ public class AudioPlayerManager: ObservableObject {
     private func applyCurrentSettings() {
         timePitch.rate = state.settings.playbackRate
         mixer.outputVolume = state.audio.effectiveVolume
+    }
+
+    /// Применяет смешивание каналов 65/35 к стерео аудио файлу
+    ///
+    /// Для комфортного прослушивания телефонных разговоров каналы смешиваются:
+    /// - Левое ухо: 65% левого канала + 35% правого канала
+    /// - Правое ухо: 35% левого канала + 65% правого канала
+    ///
+    /// Это создаёт почти моно звучание с лёгким ощущением направления (собеседник "чуть сбоку").
+    ///
+    /// - Parameter file: Стерео аудио файл для обработки
+    /// - Returns: Новый файл с примененным смешиванием каналов
+    /// - Throws: AudioPlayerError если не удалось создать или обработать файл
+    private func applyChannelMixing(to file: AVAudioFile) throws -> AVAudioFile {
+        guard file.fileFormat.channelCount == 2 else {
+            // Моно файл не нуждается в смешивании
+            return file
+        }
+
+        let format = file.processingFormat
+        let frameCount = AVAudioFrameCount(file.length)
+
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+            throw AudioPlayerError.playbackFailed("Failed to create audio buffer")
+        }
+
+        // Читаем весь файл в буфер
+        try file.read(into: buffer)
+        buffer.frameLength = frameCount
+
+        guard let leftChannel = buffer.floatChannelData?[0],
+              let rightChannel = buffer.floatChannelData?[1] else {
+            throw AudioPlayerError.playbackFailed("Failed to access channel data")
+        }
+
+        // Применяем смешивание 65/35
+        for i in 0..<Int(frameCount) {
+            let originalLeft = leftChannel[i]
+            let originalRight = rightChannel[i]
+
+            // Левое ухо: 65% L + 35% R
+            leftChannel[i] = 0.65 * originalLeft + 0.35 * originalRight
+
+            // Правое ухо: 35% L + 65% R
+            rightChannel[i] = 0.35 * originalLeft + 0.65 * originalRight
+        }
+
+        // Создаем временный файл для обработанного аудио
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("caf")
+
+        guard let outputFile = try? AVAudioFile(forWriting: tempURL, settings: format.settings) else {
+            throw AudioPlayerError.playbackFailed("Failed to create output file")
+        }
+
+        // Записываем обработанный буфер
+        try outputFile.write(from: buffer)
+
+        LogManager.app.info("Применено смешивание каналов 65/35")
+        return outputFile
     }
 
     /// Загрузка настроек из UserDefaults
@@ -214,11 +239,14 @@ public class AudioPlayerManager: ObservableObject {
 
         // Создаем новый audio file
         do {
-            audioFile = try AVAudioFile(forReading: url)
-            guard let file = audioFile else {
-                throw AudioPlayerError.playbackFailed("Failed to create audio file")
+            var file = try AVAudioFile(forReading: url)
+
+            // Применяем смешивание каналов для стерео файлов
+            if file.fileFormat.channelCount == 2 {
+                file = try applyChannelMixing(to: file)
             }
 
+            audioFile = file
             audioFormat = file.processingFormat
             audioFileURL = url
 
@@ -227,11 +255,9 @@ public class AudioPlayerManager: ObservableObject {
                 throw AudioPlayerError.playbackFailed("Invalid audio format")
             }
 
-            let isStereo = format.channelCount > 1
-
             // Переконфигурируем аудио граф для нового файла
             disconnectAllNodes()
-            configureAudioGraph(format: format, isStereo: isStereo)
+            configureAudioGraph(format: format)
             applyCurrentSettings()
 
             // Обновляем длительность
@@ -241,7 +267,7 @@ public class AudioPlayerManager: ObservableObject {
             startTime = 0
             pauseTime = 0
 
-            LogManager.app.success("Файл загружен: \(state.playback.duration)s, format: \(format.sampleRate)Hz")
+            LogManager.app.success("Файл загружен: \(state.playback.duration)s, format: \(format.sampleRate)Hz, \(format.channelCount) канал(ов)")
         } catch {
             LogManager.app.failure("Ошибка загрузки файла", error: error)
             throw AudioPlayerError.loadFailed(error)
@@ -405,36 +431,6 @@ public class AudioPlayerManager: ObservableObject {
         timePitch.rate = clampedRate
 
         LogManager.app.info("Скорость воспроизведения: \(String(format: "%.1fx", clampedRate))")
-    }
-
-    /// Переключение моно/стерео режима
-    public func setMonoMode(_ enabled: Bool) {
-        state.settings.monoMode = enabled
-
-        // Если файл загружен, перезагружаем граф
-        if let url = audioFileURL {
-            let wasPlaying = state.playback.isPlaying
-            let savedTime = state.playback.currentTime
-
-            if wasPlaying {
-                playerNode.stop()
-                stopProgressTimer()
-            }
-
-            // Сбрасываем audioFileURL чтобы loadAudio() не пропустил перезагрузку
-            audioFileURL = nil
-            audioFile = nil
-
-            // Перезагружаем файл для переконфигурации графа
-            try? loadAudio(from: url)
-
-            if wasPlaying {
-                state.playback.currentTime = savedTime
-                play()
-            }
-
-            LogManager.app.info("Моно режим: \(enabled ? "включен" : "выключен")")
-        }
     }
 
     /// Переключение воспроизведения (play/pause)
