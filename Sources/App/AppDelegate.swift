@@ -280,6 +280,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        LogManager.app.info("Начинаем транскрибацию файла: \(file.lastPathComponent)")
+
         // ВАЖНО: Отменяем предыдущую транскрибацию если она ещё выполняется
         if let previousTask = currentTranscriptionTask {
             LogManager.app.warning("Отменяем предыдущую транскрибацию перед запуском новой")
@@ -287,9 +289,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             currentTranscriptionTask = nil
         }
 
-        LogManager.app.info("Начинаем транскрибацию файла: \(file.lastPathComponent)")
-
         currentTranscriptionTask = Task {
+            // Показываем статус отмены и сбрасываем прогресс
+            await MainActor.run {
+                window.viewModel.modelLoadingStatus = "Cancelling previous transcription..."
+                window.viewModel.reset()  // Сбрасываем прогресс-бар
+            }
+
+            // Даём 100ms на завершение отмены предыдущей задачи
+            do {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            } catch {
+                // Игнорируем ошибку отмены sleep
+            }
             // 1. Ожидание загрузки модели
             do {
                 try await waitForModelLoading(window: window, file: file)
@@ -385,6 +397,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             throw TranscriptionError.serviceNotInitialized("FileTranscriptionService")
         }
 
+        guard let whisperService = whisperService else {
+            throw TranscriptionError.serviceNotInitialized("WhisperService")
+        }
+
+        // Проверяем, изменилась ли модель
+        let currentModelInSettings = dependencies.modelManager.currentModel
+        if whisperService.currentModelSize != currentModelInSettings {
+            LogManager.app.info("Модель изменилась: \(whisperService.currentModelSize) → \(currentModelInSettings), перезагружаем...")
+
+            await MainActor.run {
+                window.viewModel.modelLoadingStatus = "Reloading model..."
+            }
+
+            try await whisperService.reloadModel(newModelSize: currentModelInSettings)
+
+            await MainActor.run {
+                window.viewModel.modelLoadingStatus = "Model ready"
+                window.viewModel.modelName = whisperService.currentModelSize
+            }
+        }
+
         // Обновляем модель и VAD информацию через DI
         await MainActor.run {
             window.viewModel.setModel(dependencies.modelManager.currentModel)
@@ -399,39 +432,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Создаём BatchTranscriptionService для получения промежуточного прогресса
-        if let whisperService = whisperService {
-            let batchService = BatchTranscriptionService(whisperService: whisperService)
+        let batchService = BatchTranscriptionService(whisperService: whisperService)
 
-            // Подписываемся на обновления прогресса
-            batchService.onProgressUpdate = { [weak window] fileName, progress, partialDialogue in
-                Task { @MainActor in
-                    window?.viewModel.updateProgress(file: fileName, progress: progress)
-                    LogManager.app.debug("Progress: \(Int(progress * 100))%")
-                }
+        // Подписываемся на обновления прогресса
+        batchService.onProgressUpdate = { [weak window] fileName, progress, partialDialogue in
+            Task { @MainActor in
+                window?.viewModel.updateProgress(file: fileName, progress: progress)
+                LogManager.app.debug("Progress: \(Int(progress * 100))%")
             }
+        }
 
-            // Используем batch service для транскрибации с прогрессом
-            let dialogue = try await batchService.transcribe(url: file)
+        // Используем batch service для транскрибации с прогрессом
+        let dialogue = try await batchService.transcribe(url: file)
 
-            // Передаём DialogueTranscription напрямую в ViewModel
-            await MainActor.run {
-                window.viewModel.setDialogue(
-                    file: file.lastPathComponent,
-                    dialogue: dialogue,
-                    fileURL: file
-                )
-            }
-        } else {
-            // Если whisperService недоступен, используем старый метод
-            let dialogue = try await fileService.transcribeFileWithDialogue(at: file)
-
-            await MainActor.run {
-                window.viewModel.setDialogue(
-                    file: file.lastPathComponent,
-                    dialogue: dialogue,
-                    fileURL: file
-                )
-            }
+        // Передаём DialogueTranscription напрямую в ViewModel
+        await MainActor.run {
+            window.viewModel.setDialogue(
+                file: file.lastPathComponent,
+                dialogue: dialogue,
+                fileURL: file
+            )
         }
 
         // Обновляем прогресс до 100%

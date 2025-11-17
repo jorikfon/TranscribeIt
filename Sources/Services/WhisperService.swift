@@ -359,6 +359,9 @@ public class WhisperService {
     ///   - promptTokens: Опциональный массив токенов для контекстного промпта
     /// - Returns: Распознанный текст
     private func transcribeInternal(audioSamples: [Float], promptTokens: [Int]? = nil) async throws -> String {
+        // Проверяем отмену перед началом транскрипции
+        try Task.checkCancellation()
+
         guard let whisperKit = whisperKit else {
             LogManager.transcription.failure("Транскрипция", message: "Модель не загружена")
             throw WhisperError.modelNotLoaded

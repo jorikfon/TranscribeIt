@@ -56,7 +56,7 @@
   "features": {
     "branch_enforcement": true,
     "task_detection": true,
-    "auto_ultrathink": false,
+    "auto_ultrathink": true,
     "icon_style": "emoji",
     "context_warnings": {
       "warn_85": true,

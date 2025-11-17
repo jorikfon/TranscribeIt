@@ -480,6 +480,9 @@ public class FileTranscriptionService {
     public func transcribeFileWithDialogue(at url: URL) async throws -> DialogueTranscription {
         LogManager.app.begin("Транскрипция файла с определением дикторов: \(url.lastPathComponent)")
 
+        // Проверяем отмену в самом начале
+        try Task.checkCancellation()
+
         // Проверяем готовность модели Whisper
         if !whisperService.isReady {
             LogManager.app.error("Модель Whisper не загружена, ожидание...")
@@ -525,7 +528,7 @@ public class FileTranscriptionService {
             let totalDuration = TimeInterval(audioSamples.count) / 16000.0
 
             // Используем базовый контекстный промпт если указан
-            let baseContextPrompt = self.settings.baseContextPrompt
+            let baseContextPrompt = self.userSettings.baseContextPrompt
             let contextPrompt = baseContextPrompt.isEmpty ? nil : baseContextPrompt
             let text = try await whisperService.transcribe(audioSamples: audioSamples, contextPrompt: contextPrompt)
 
@@ -676,8 +679,14 @@ public class FileTranscriptionService {
     private func transcribeStereoAsDialogue(url: URL) async throws -> DialogueTranscription {
         LogManager.app.info("🎧 Стерео режим: разделяем каналы для определения дикторов")
 
+        // Проверяем отмену перед началом обработки
+        try Task.checkCancellation()
+
         // 1. Подготовка: загрузка и разделение стерео каналов
         let (leftChannel, rightChannel, totalDuration) = try await prepareStereoChanels(from: url)
+
+        // Проверяем отмену перед VAD анализом
+        try Task.checkCancellation()
 
         // 2. VAD анализ: обнаружение и объединение сегментов речи
         let allSegments = try await detectAndMergeStereoSegments(
@@ -833,7 +842,7 @@ public class FileTranscriptionService {
         var contextParts: [String] = []
 
         // Добавляем базовый контекстный промпт если указан
-        let baseContextPrompt = self.settings.baseContextPrompt
+        let baseContextPrompt = self.userSettings.baseContextPrompt
         if !baseContextPrompt.isEmpty {
             contextParts.append(baseContextPrompt)
         }
