@@ -59,6 +59,18 @@ public class AudioPlayerManager: ObservableObject {
     // Audio cache для оптимизации загрузки
     private let audioCache: AudioCache
 
+    // Наблюдатель за изменениями конфигурации аудио устройств
+    private var configurationChangeObserver: NSObjectProtocol?
+
+    // Флаг для предотвращения обработки изменений устройств во время загрузки файла
+    private var isReconfiguring = false
+
+    // Флаг для отслеживания явной остановки пользователем
+    private var wasExplicitlyStopped = false
+
+    // Отложенная задача для debouncing изменений конфигурации
+    private var configurationChangeWorkItem: DispatchWorkItem?
+
     public init(audioCache: AudioCache) {
         self.audioCache = audioCache
         LogManager.app.info("AudioPlayerManager: Инициализация")
@@ -79,6 +91,7 @@ public class AudioPlayerManager: ObservableObject {
     private func setupAudioEngine() {
         attachAudioNodes()
         configureMixerDefaults()
+        setupConfigurationChangeObserver()
         LogManager.app.info("AudioPlayerManager: AVAudioEngine настроен")
     }
 
@@ -92,6 +105,23 @@ public class AudioPlayerManager: ObservableObject {
     /// Устанавливает дефолтные значения для mixer узла
     private func configureMixerDefaults() {
         mixer.outputVolume = 1.0
+    }
+
+    /// Настраивает наблюдатель за изменениями конфигурации аудио устройств
+    ///
+    /// Подписывается на уведомления AVAudioEngineConfigurationChange для обработки:
+    /// - Отключения/подключения аудио устройств
+    /// - Изменения маршрута аудио (headphones → speakers)
+    /// - Изменения частоты дискретизации или количества каналов
+    private func setupConfigurationChangeObserver() {
+        configurationChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: audioEngine,
+            queue: nil
+        ) { [weak self] notification in
+            self?.handleAudioConfigurationChange(notification)
+        }
+        LogManager.app.info("AudioPlayerManager: Наблюдатель за изменениями аудио устройств настроен")
     }
 
     /// Отключает все соединения между узлами перед переконфигурацией
@@ -212,6 +242,11 @@ public class AudioPlayerManager: ObservableObject {
 
         LogManager.app.info("AudioPlayerManager: Загрузка файла \(url.lastPathComponent)")
 
+        // Устанавливаем флаг переконфигурации для предотвращения race condition
+        // с обработчиком изменений устройств
+        isReconfiguring = true
+        defer { isReconfiguring = false }
+
         // Останавливаем старый плеер
         if playerNode.isPlaying {
             playerNode.stop()
@@ -281,6 +316,9 @@ public class AudioPlayerManager: ObservableObject {
             LogManager.app.error("AudioPlayerManager: Файл не загружен")
             return
         }
+
+        // Сбрасываем флаг явной остановки при начале воспроизведения
+        wasExplicitlyStopped = false
 
         // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Всегда останавливаем и сбрасываем playerNode
         // перед началом нового воспроизведения, чтобы избежать наложения аудио потоков
@@ -362,6 +400,9 @@ public class AudioPlayerManager: ObservableObject {
         startTime = 0
         pauseTime = 0
         stopProgressTimer()
+
+        // Отмечаем что остановка была явной (пользователем)
+        wasExplicitlyStopped = true
 
         LogManager.app.info("Воспроизведение остановлено")
     }
@@ -472,7 +513,111 @@ public class AudioPlayerManager: ObservableObject {
         displayLink = nil
     }
 
+    /// Обрабатывает изменения конфигурации аудио устройств
+    ///
+    /// Вызывается когда:
+    /// - Аудио устройство отключено/подключено
+    /// - Изменился маршрут аудио (headphones → speakers)
+    /// - Изменилась частота дискретизации или количество каналов
+    ///
+    /// Выполняет автоматическое восстановление воспроизведения:
+    /// 1. Сохраняет текущую позицию если воспроизведение активно
+    /// 2. Останавливает engine
+    /// 3. Пытается перезапустить engine (автоматически подключится к новому устройству)
+    /// 4. Восстанавливает воспроизведение с сохраненной позиции
+    ///
+    /// - Parameter notification: Уведомление об изменении конфигурации
+    private func handleAudioConfigurationChange(_ notification: Notification) {
+        // Отменяем предыдущую отложенную задачу (debouncing)
+        configurationChangeWorkItem?.cancel()
+
+        // Создаем новую задачу с задержкой 0.3s для предотвращения множественных перезапусков
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+
+            // Пропускаем обработку если идет загрузка файла (race condition prevention)
+            guard !self.isReconfiguring else {
+                LogManager.app.debug("AudioPlayerManager: Пропускаем изменение конфигурации во время загрузки файла")
+                return
+            }
+
+            // Проверяем, нужно ли восстанавливать воспроизведение
+            guard self.audioFile != nil else {
+                LogManager.app.debug("AudioPlayerManager: Нет загруженного файла, восстановление не требуется")
+                return
+            }
+
+            // Пропускаем если пользователь явно остановил воспроизведение
+            guard !self.wasExplicitlyStopped else {
+                LogManager.app.debug("AudioPlayerManager: Пропускаем восстановление - воспроизведение остановлено пользователем")
+                return
+            }
+
+            LogManager.app.info("AudioPlayerManager: Обнаружено изменение конфигурации аудио устройств")
+
+            // Устанавливаем статус переподключения
+            self.state.deviceStatus = .reconnecting
+
+            // Сохраняем состояние воспроизведения
+            let wasPlaying = self.state.playback.isPlaying
+            let savedPosition = self.state.playback.currentTime
+
+            // Останавливаем воспроизведение и engine
+            if self.playerNode.isPlaying {
+                self.playerNode.stop()
+                self.stopProgressTimer()
+            }
+
+            if self.audioEngine.isRunning {
+                self.audioEngine.stop()
+                LogManager.app.debug("AudioPlayerManager: Engine остановлен для переконфигурации")
+            }
+
+            // Пытаемся перезапустить engine
+            // AVAudioEngine автоматически подключится к текущему устройству по умолчанию
+            do {
+                try self.audioEngine.start()
+                LogManager.app.success("AudioPlayerManager: Engine успешно переподключен к новому аудио устройству")
+
+                // Устанавливаем статус подключено
+                self.state.deviceStatus = .connected
+
+                // Восстанавливаем воспроизведение если оно было активно
+                if wasPlaying {
+                    self.state.playback.currentTime = savedPosition
+                    self.play()
+                    LogManager.app.info("AudioPlayerManager: Воспроизведение восстановлено с позиции \(savedPosition)s")
+                }
+            } catch {
+                // Не удалось перезапустить engine - вероятно нет доступных устройств
+                LogManager.app.failure("AudioPlayerManager: Не удалось переподключиться к аудио устройству", error: error)
+
+                // Устанавливаем статус недоступно
+                self.state.deviceStatus = .unavailable
+
+                // Обновляем состояние UI
+                self.state.playback.isPlaying = false
+            }
+        }
+
+        configurationChangeWorkItem = workItem
+
+        // Уведомление приходит на фоновом потоке (CoreAudio thread)
+        // Выполняем с задержкой на главном потоке для debouncing
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
+    }
+
     deinit {
+        // Отменяем отложенную задачу переконфигурации
+        configurationChangeWorkItem?.cancel()
+        configurationChangeWorkItem = nil
+
+        // Удаляем наблюдатель за изменениями аудио устройств
+        if let observer = configurationChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configurationChangeObserver = nil
+        }
+
         // Останавливаем воспроизведение
         playerNode.stop()
         audioEngine.stop()

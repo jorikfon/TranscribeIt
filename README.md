@@ -43,6 +43,7 @@ TranscribeIt is a native macOS application designed specifically for **transcrib
 - Mono/Stereo toggle
 - Volume boost (100% to 500%) for low-quality recordings
 - Waveform scrubbing and visualization
+- **Automatic audio device switching**: Seamlessly switches to available output when headphones unplugged
 
 ### 💾 **Multi-Format Export**
 - **SRT** - SubRip subtitles with speaker labels
@@ -309,6 +310,14 @@ Manage downloaded Whisper models in Settings:
 - Try re-encoding file to standard format (MP3/WAV)
 - Check audio file isn't corrupted
 - Restart TranscribeIt
+
+**Problem**: Playback stops when headphones unplugged
+
+**Solutions**:
+- App automatically switches to laptop speakers - playback should resume automatically
+- Check device status banner in audio player for connection state
+- If status shows "unavailable", connect headphones or speakers
+- Playback position is preserved during device changes
 
 ## Privacy & Security
 

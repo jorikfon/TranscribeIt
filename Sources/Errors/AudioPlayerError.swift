@@ -38,6 +38,17 @@ public enum AudioPlayerError: LocalizedError {
     /// Неверный volume boost
     case invalidVolumeBoost(Float, validRange: ClosedRange<Float>)
 
+    // MARK: - Device Errors
+
+    /// Аудио устройство было отключено во время воспроизведения
+    case audioDeviceDisconnected
+
+    /// Нет доступных аудио устройств для воспроизведения
+    case audioDeviceUnavailable
+
+    /// Не удалось обработать изменение конфигурации аудио
+    case configurationChangeFailed(Error)
+
     // MARK: - LocalizedError Implementation
 
     public var errorDescription: String? {
@@ -68,6 +79,15 @@ public enum AudioPlayerError: LocalizedError {
 
         case .invalidVolumeBoost(let boost, let validRange):
             return "Неверное усиление громкости: \(boost)x (допустимо: \(validRange.lowerBound)x - \(validRange.upperBound)x)"
+
+        case .audioDeviceDisconnected:
+            return "Аудио устройство отключено"
+
+        case .audioDeviceUnavailable:
+            return "Нет доступных аудио устройств"
+
+        case .configurationChangeFailed(let error):
+            return "Ошибка изменения конфигурации аудио: \(error.localizedDescription)"
         }
     }
 
@@ -99,6 +119,15 @@ public enum AudioPlayerError: LocalizedError {
 
         case .invalidVolumeBoost(_, let validRange):
             return "Используйте усиление от \(validRange.lowerBound)x до \(validRange.upperBound)x"
+
+        case .audioDeviceDisconnected:
+            return "Переключаемся на встроенные динамики..."
+
+        case .audioDeviceUnavailable:
+            return "Подключите наушники или динамики для воспроизведения"
+
+        case .configurationChangeFailed:
+            return "Перезапустите воспроизведение"
         }
     }
 
@@ -130,6 +159,15 @@ public enum AudioPlayerError: LocalizedError {
 
         case .invalidVolumeBoost(let boost, _):
             return "Volume boost \(boost)x выходит за допустимые пределы"
+
+        case .audioDeviceDisconnected:
+            return "Аудио устройство было физически отключено во время воспроизведения"
+
+        case .audioDeviceUnavailable:
+            return "В системе не обнаружено доступных аудио устройств вывода"
+
+        case .configurationChangeFailed(let error):
+            return "AVAudioEngine не смог переконфигурироваться: \(error.localizedDescription)"
         }
     }
 }

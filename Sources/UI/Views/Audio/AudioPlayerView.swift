@@ -66,6 +66,11 @@ public struct AudioPlayerView: View {
             // Прогресс бар
             progressBar
 
+            // Статус аудио устройства (если не подключено)
+            if audioPlayer.state.deviceStatus != .connected {
+                deviceStatusBanner
+            }
+
             // Контролы плеера
             playerControls
         }
@@ -195,6 +200,35 @@ public struct AudioPlayerView: View {
                 .foregroundColor(audioPlayer.state.audio.volumeBoost > 1.0 ? .orange : .secondary)
                 .frame(width: AudioPlayerConstants.volumeTextWidth, alignment: .trailing)
         }
+    }
+
+    // MARK: - Device Status Banner
+
+    /// Баннер с информацией о статусе аудио устройства
+    ///
+    /// Показывается когда устройство отключено или переподключается
+    private var deviceStatusBanner: some View {
+        HStack(spacing: 6) {
+            Image(systemName: audioPlayer.state.deviceStatus == .reconnecting
+                ? "antenna.radiowaves.left.and.right"
+                : "exclamationmark.triangle.fill")
+                .foregroundColor(audioPlayer.state.deviceStatus == .reconnecting ? .blue : .orange)
+                .font(.system(size: 12))
+
+            Text(audioPlayer.state.deviceStatus == .reconnecting
+                ? "Переподключение к аудио устройству..."
+                : "Нет доступных аудио устройств")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            audioPlayer.state.deviceStatus == .reconnecting
+                ? Color.blue.opacity(0.1)
+                : Color.orange.opacity(0.15)
+        )
+        .cornerRadius(6)
     }
 
     // MARK: - Formatting Helpers

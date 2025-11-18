@@ -1,5 +1,20 @@
 import Foundation
 
+/// Статус подключения аудио устройства
+///
+/// Отслеживает состояние подключения аудио устройств вывода
+/// для отображения соответствующей обратной связи в UI.
+public enum DeviceStatus: Equatable {
+    /// Аудио устройство подключено и работает нормально
+    case connected
+
+    /// Аудио устройство отключено, происходит переподключение
+    case reconnecting
+
+    /// Нет доступных аудио устройств вывода
+    case unavailable
+}
+
 /// Состояние аудио плеера
 ///
 /// Объединяет все состояния AudioPlayerManager в логические группы
@@ -31,15 +46,25 @@ public struct AudioPlayerState: Equatable {
     /// Настройки воспроизведения (скорость, режим)
     public var settings: AudioSettings
 
+    /// Статус подключения аудио устройства
+    ///
+    /// Используется для отображения статуса устройства в UI:
+    /// - `.connected` - Нормальная работа
+    /// - `.reconnecting` - Происходит переподключение к новому устройству
+    /// - `.unavailable` - Нет доступных устройств вывода
+    public var deviceStatus: DeviceStatus = .connected
+
     /// Инициализирует состояние с дефолтными значениями
     public init(
         playback: PlaybackState = PlaybackState(),
         audio: AudioState = AudioState(),
-        settings: AudioSettings = AudioSettings()
+        settings: AudioSettings = AudioSettings(),
+        deviceStatus: DeviceStatus = .connected
     ) {
         self.playback = playback
         self.audio = audio
         self.settings = settings
+        self.deviceStatus = deviceStatus
     }
 }
 
@@ -197,6 +222,7 @@ extension AudioPlayerState {
         playback = PlaybackState()
         audio = AudioState()
         settings = AudioSettings()
+        deviceStatus = .connected
     }
 
     /// Создает копию состояния с остановленным воспроизведением

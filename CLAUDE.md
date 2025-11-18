@@ -187,12 +187,20 @@ public enum TranscriptionError: LocalizedError {
 
 **WhisperError** - Model loading and transcription errors
 **AudioPlayerError** - Audio playback and format errors
+- Loading errors: `loadFailed`, `invalidFormat`, `fileNotFound`
+- Playback errors: `playbackFailed`, `engineStartFailed`, `nodeConnectionFailed`
+- Configuration errors: `invalidPlaybackRate`, `invalidVolumeBoost`
+- **Device errors** (NEW):
+  - `audioDeviceDisconnected` - Device unplugged during playback
+  - `audioDeviceUnavailable` - No output devices available
+  - `configurationChangeFailed(Error)` - Failed to handle device change
 
 **Benefits**:
 - Type-safe error handling
 - Eliminates generic `NSError` usage
-- Localized error messages
+- Localized error messages (Russian)
 - Clear error propagation
+- Actionable recovery suggestions
 
 ### 5. Actor-Based Concurrency
 
@@ -325,9 +333,13 @@ The service builds intelligent context prompts for each transcription segment:
 - Audio player integration
 
 **AudioPlayerState**:
-- Grouped state management (playback, audio, settings)
+- Grouped state management (playback, audio, settings, deviceStatus)
 - Replaces scattered `@Published` properties
 - Equatable for efficient SwiftUI updates
+- **DeviceStatus enum**: Tracks audio device connection state
+  - `.connected` - Normal operation
+  - `.reconnecting` - Device change in progress
+  - `.unavailable` - No output devices available
 
 ### Views (Modular Composition)
 
@@ -355,6 +367,9 @@ The service builds intelligent context prompts for each transcription segment:
 - Volume boost (100% - 500%)
 - Progress bar with click-to-seek
 - Mono/stereo toggle
+- **Device status banner**: Shows connection status when device disconnected/reconnecting
+  - Blue banner with animation icon during reconnection
+  - Orange warning banner when no devices available
 
 **SettingsPanel** (`Sources/UI/Views/Transcription/SettingsPanel.swift`):
 - Whisper model selection (Tiny through Large-v3)
@@ -494,6 +509,12 @@ AFTER:  [Speaker 1: 0-2s] -0.15s- [Speaker 2: 2.15-4.15s]
 - Frame-accurate seeking
 - Speed and volume control
 - Uses `AudioCache` for efficient loading
+- **Audio device change handling**: Automatic recovery when headphones unplugged/reconnected
+  - Observes `AVAudioEngineConfigurationChange` notifications
+  - Preserves playback position during device switches
+  - Graceful handling when no devices available
+  - Debouncing (0.3s) to prevent rapid reconnection attempts
+  - Race condition prevention during file loading
 
 **AudioFileNormalizer**:
 - Noise reduction
@@ -683,6 +704,23 @@ print("Silence gaps detected: \(mapper.silenceGaps.count)")
 print("Visual duration: \(mapper.totalVisualDuration(realDuration: duration))")
 ```
 
+### Audio Device Changes
+
+**Symptoms**: Playback stops when headphones unplugged, app becomes unresponsive
+
+**Solutions**:
+1. **Automatic recovery enabled** - App automatically switches to available output device (laptop speakers)
+2. Check device status banner in audio player UI for current connection state
+3. If device status shows "unavailable", connect headphones or speakers
+4. If issues persist after device reconnection, restart playback manually
+
+**How it works**:
+- AudioPlayerManager observes `AVAudioEngineConfigurationChange` notifications
+- Automatically stops engine, reconnects to new default output device, and resumes playback
+- Playback position is preserved during device switches
+- Debouncing prevents rapid reconnection attempts (0.3s delay)
+- UI shows real-time device status (connected/reconnecting/unavailable)
+
 ## Design Principles
 
 1. **MVVM Architecture** - Clear separation of business logic and UI
@@ -715,12 +753,22 @@ print("Visual duration: \(mapper.totalVisualDuration(realDuration: duration))")
   - `maxContextLength`, `maxRecentTurns`, `enableEntityExtraction`, `enableVocabularyIntegration`, `postVADMergeThreshold`
 - Timeline compression: `Sources/Utils/Timeline/TimelineMapper.swift`
 - Audio caching: `Sources/Utils/Audio/AudioCache.swift`
-- Typed errors: `Sources/Errors/TranscriptionError.swift`
+- Typed errors: `Sources/Errors/TranscriptionError.swift`, `Sources/Errors/AudioPlayerError.swift`
+  - Audio device errors: lines 43-50 (error cases), 83-90, 123-130, 163-170 (localized messages)
 - Protocol abstractions: `Sources/Protocols/UserSettingsProtocol.swift`
   - Context optimization protocol requirements
 - Mock implementations: `Tests/Mocks/MockUserSettings.swift`
   - All context optimization test properties
 - Audio player: `Sources/Utils/AudioPlayerManager.swift`
+  - Device change observer setup: `setupConfigurationChangeObserver()` (lines 116-125)
+  - Device change handler: `handleAudioConfigurationChange()` (lines 530-608)
+  - Observer cleanup: `deinit` (lines 610-627)
+  - State flags: `isReconfiguring`, `wasExplicitlyStopped`, `configurationChangeWorkItem` (lines 66, 69, 72)
+- Audio player state: `Sources/UI/ViewModels/AudioPlayerState.swift`
+  - DeviceStatus enum (lines 7-16)
+  - deviceStatus property (line 55)
+- Audio player UI: `Sources/UI/Views/Audio/AudioPlayerView.swift`
+  - Device status banner (lines 70-72, 210-232)
 - Model management: `Sources/Utils/ModelManager.swift`
 
 ## Future Enhancements

@@ -266,6 +266,10 @@ Sources/Errors/
 ├── TranscriptionError.swift    # File transcription errors
 ├── WhisperError.swift           # Whisper model errors
 └── AudioPlayerError.swift       # Audio playback errors
+    ├── Loading errors
+    ├── Playback errors
+    ├── Configuration errors
+    └── Device errors (NEW: audioDeviceDisconnected, audioDeviceUnavailable, configurationChangeFailed)
 ```
 
 Strongly-typed error handling with recovery suggestions.
@@ -279,7 +283,7 @@ Cross-cutting concerns and helper functionality.
 Sources/Utils/
 ├── Audio/
 │   ├── AudioCache.swift             # Audio caching actor
-│   ├── AudioPlayerManager.swift     # Audio playback
+│   ├── AudioPlayerManager.swift     # Audio playback with device change handling
 │   ├── AudioFileNormalizer.swift    # Audio preprocessing
 │   └── AudioNormalizerConstants.swift
 ├── Timeline/
@@ -435,6 +439,48 @@ Thread-safe actor-based caching to prevent redundant file loading:
 - Shared across services
 - Memory-efficient LRU eviction
 - Statistics tracking
+
+### Audio Device Change Handling
+
+Automatic recovery when audio output devices are connected/disconnected:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│         AudioPlayerManager                              │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │  Configuration Change Observer:                   │ │
+│  │  - Observes AVAudioEngineConfigurationChange      │ │
+│  │  - Triggered on device connect/disconnect         │ │
+│  │  - Notified on sample rate changes                │ │
+│  └───────────────────────────────────────────────────┘ │
+│                                                          │
+│  Recovery Flow:                                         │
+│  1. Save playback state (position, isPlaying)          │
+│  2. Stop AVAudioEngine gracefully                      │
+│  3. Set deviceStatus = .reconnecting                   │
+│  4. Restart engine (auto-connects to default output)   │
+│  5. Restore playback from saved position               │
+│  6. Set deviceStatus = .connected/.unavailable         │
+│                                                          │
+│  Safety Features:                                       │
+│  - Debouncing (0.3s) prevents rapid reconnections     │
+│  - Race condition prevention during file loading       │
+│  - Explicit stop tracking (wasExplicitlyStopped)      │
+│  - Observer cleanup in deinit                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Device Status States:**
+- `.connected` - Normal operation
+- `.reconnecting` - Device change in progress (blue banner in UI)
+- `.unavailable` - No output devices available (orange warning in UI)
+
+**Benefits:**
+- Seamless user experience (playback continues automatically)
+- Playback position preserved during device switches
+- Clear UI feedback via device status banner
+- Graceful handling when no devices available
+- Prevents app freeze/hang on device disconnection
 
 ---
 
